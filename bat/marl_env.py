@@ -8,7 +8,7 @@ SupplyChainMARLEnv splits these matrices by column: every stage (factory, wareho
 RLlib agent (heterogeneous agents, independent PPO), with its own
     observation : its own column of the state matrix
     action      : its own column of the action matrix (own MultiDiscrete space)
-    reward      : minus its own cost (inventory holding cost + stockout cost)
+    reward      : minus the team cost (default), its own cost, or a mix of both (reward_mode)
     policy      : its own RLModule, no parameter sharing
 
 Event driven: the actions are only executed on reorder days (the retailer's inventory hits its reorder point),
@@ -22,7 +22,18 @@ env_config keys
 ---------------
 env_class    : "module:Class" of the wrapped single-planner environment, default "AssembyBat:Batch_L10"
 env_kwargs   : kwargs passed to the environment class
-reward_scale : rewards are multiplied by this factor (the costs are in the order of 1e4)
+reward_scale : rewards are multiplied by this factor, default DEFAULT_REWARD_SCALE = 1e-4 (the costs are in the
+               order of 1e4 - 1e6 per episode; unscaled, the value function cannot fit the returns)
+reward_mode  : "team" (default): every agent gets minus the total cost of the supply chain (cooperative game);
+               "individual": minus its own cost; "mixed": minus (1 - team_weight) * own cost + team_weight * total cost
+team_weight  : weight of the total cost in the "mixed" reward mode, default 0.5
+final_costs  : True (default): the costs not settled yet when the episode ends (stockouts since the last reorder day,
+               holding cost of that day) are charged on the last step. Without it the stockouts that end the episode
+               are free, and giving up (ending the episode early with stockouts) can be cheaper than surviving
+termination_penalty : extra cost of every agent when the episode terminates (too many stockout days), default 0
+max_stockout_days : the episode terminates after this many days with a retailer stockout; None (default): the value
+               of the environment (12); 0: never terminate, the episode always runs the T days and the stockouts are
+               only costs (no early way out of the episode, see the smoke tests of 2026-10-12)
 obs_rows     : pad the state matrix with zero rows up to this number of rows, so that environments with
                different state sizes give the same observation space and a trained policy can be transferred
                between them (continual learning)
@@ -40,6 +51,8 @@ from ray.tune.registry import register_env
 
 ENV_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_NAME = "SupplyChainMARL"
+DEFAULT_REWARD_SCALE = 1e-4
+REWARD_MODES = {"individual": 0.0, "team": 1.0, "mixed": None}   # weight of the total cost (mixed: team_weight)
 DEFAULT_AGENT_NAMES = ["factory", "warehouse", "retailer"]
 
 # environment ids (as in the original stable-baselines3 scripts)
@@ -67,7 +80,14 @@ class SupplyChainMARLEnv(MultiAgentEnv):
         super().__init__()
         config = dict(config or {})
         self.env = resolve_env_class(config.get("env_class", "AssembyBat:Batch_L10"))(**config.get("env_kwargs", {}))
-        self.reward_scale = config.get("reward_scale", 1.0)
+        self.reward_scale = config.get("reward_scale", DEFAULT_REWARD_SCALE)
+        self.reward_mode = config.get("reward_mode", "team")
+        self.team_weight = team_weight(config)
+        self.final_costs = config.get("final_costs", True)
+        self.termination_penalty = config.get("termination_penalty", 0.0)
+        max_stockout_days = config.get("max_stockout_days")
+        if max_stockout_days is not None:
+            self.env.max_stockout_days = max_stockout_days if max_stockout_days > 0 else float("inf")
 
         self.n_stage = getattr(self.env, "n_stage", 3)
         obs_nvec = np.asarray(self.env.observation_space.nvec).reshape(-1, self.n_stage)
@@ -111,11 +131,21 @@ class SupplyChainMARLEnv(MultiAgentEnv):
                 return trigger, terminated, truncated
             self.env.end_day(no_action)
 
-    def _costs(self, trigger):
-        # sparse reward: costs only on reorder days, 0 if the episode ends before the next reorder day
-        if not trigger:
-            return [0.0] * self.n_stage
-        return [float(c) for c in self.env.agent_costs()]
+    def _costs(self, trigger, done=False, terminated=False):
+        # sparse reward: costs only on reorder days, and (final_costs) on the last day of the episode, so that the
+        # stockouts between the last reorder day and the end of the episode are not free
+        if not (trigger or (done and self.final_costs)):
+            costs = [0.0] * self.n_stage
+        else:
+            costs = [float(c) for c in self.env.agent_costs()]
+        if terminated and self.termination_penalty:
+            costs = [c + self.termination_penalty for c in costs]
+        return costs
+
+    def _rewards(self, costs):
+        # minus (1 - w) * own cost + w * total cost, w = 1 for the team reward, 0 for the individual reward
+        total, w = sum(costs), self.team_weight
+        return {aid: -((1 - w) * c + w * total) * self.reward_scale for aid, c in zip(self.possible_agents, costs)}
 
     def reset(self, *, seed=None, options=None):
         for _ in range(100):
@@ -143,8 +173,8 @@ class SupplyChainMARLEnv(MultiAgentEnv):
         self.env.end_day(action.flatten())
         trigger, terminated, truncated = self._advance()
 
-        costs = self._costs(trigger)
-        rewards = {aid: -c * self.reward_scale for aid, c in zip(self.possible_agents, costs)}
+        costs = self._costs(trigger, done=terminated or truncated, terminated=terminated)
+        rewards = self._rewards(costs)
         terminateds = {aid: terminated for aid in self.possible_agents}
         truncateds = {aid: truncated for aid in self.possible_agents}
         terminateds["__all__"], truncateds["__all__"] = terminated, truncated
@@ -157,6 +187,30 @@ def env_creator(env_config):
 
 
 register_env(ENV_NAME, env_creator)
+
+
+def team_weight(env_config):
+    """Weight of the total cost in the agents' reward: 1 (team), 0 (individual) or team_weight (mixed)."""
+    mode = env_config.get("reward_mode", "team")
+    if mode not in REWARD_MODES:
+        raise ValueError(f"reward_mode {mode!r}, expected one of {sorted(REWARD_MODES)}")
+    w = REWARD_MODES[mode]
+    return float(env_config.get("team_weight", 0.5)) if w is None else w
+
+
+def team_return_callback(env_config):
+    """on_episode_end callback: logs env_runners/team_return, the episode return of the supply chain in the
+    original cost units (minus the total cost of all agents), whatever the reward mode and reward scale, so that runs
+    with different reward settings can be compared (episode_return_mean is the sum of the agents' scaled rewards).
+    sum of the agents' rewards = -(1 - w + n w) * total cost * reward_scale, see SupplyChainMARLEnv._rewards."""
+    scale = env_config.get("reward_scale", DEFAULT_REWARD_SCALE)
+    w = team_weight(env_config)
+
+    def on_episode_end(*, episode, metrics_logger, **kwargs):
+        n = len(episode.agent_ids)
+        metrics_logger.log_value("team_return", episode.get_return() / (scale * (1 - w + n * w)), reduce="mean")
+
+    return on_episode_end
 
 
 def init_ray(**kwargs):
@@ -177,9 +231,11 @@ def init_ray(**kwargs):
 
 def build_ppo_config(env_config, lr=3e-4, hiddens=(64, 64), use_lstm=False, lstm_cell_size=64, max_seq_len=20,
                      num_env_runners=1, num_envs_per_env_runner=1, num_gpus=0,
-                     train_batch_size=2048, minibatch_size=64, num_epochs=10):
+                     train_batch_size=2048, minibatch_size=256, num_epochs=5, entropy_coeff=0.01):
     """Multi-agent PPO config: one independent policy (RLModule) per supply chain stage.
-    The PPO hyperparameters default to the stable-baselines3 PPO defaults used before."""
+    Compared with the stable-baselines3 PPO defaults used before (minibatch 64, 10 epochs, no entropy bonus), the
+    updates are gentler (320 -> 40 SGD steps per iteration) and the entropy bonus keeps the policies from becoming
+    deterministic too early (the collapses of the first runs followed KL spikes of near-deterministic policies)."""
     from ray.rllib.algorithms.ppo import PPOConfig
     from ray.rllib.core.rl_module.default_model_config import DefaultModelConfig
     from ray.rllib.core.rl_module.multi_rl_module import MultiRLModuleSpec
@@ -195,10 +251,11 @@ def build_ppo_config(env_config, lr=3e-4, hiddens=(64, 64), use_lstm=False, lstm
         .environment(env=ENV_NAME, env_config=env_config)
         .env_runners(num_env_runners=num_env_runners, num_envs_per_env_runner=num_envs_per_env_runner)
         .learners(num_learners=0, num_gpus_per_learner=num_gpus)
-        .training(lr=lr, gamma=0.99, lambda_=0.95, clip_param=0.2, entropy_coeff=0.0, vf_loss_coeff=0.5,
+        .training(lr=lr, gamma=0.99, lambda_=0.95, clip_param=0.2, entropy_coeff=entropy_coeff, vf_loss_coeff=0.5,
                   grad_clip=0.5, vf_clip_param=float("inf"),
                   train_batch_size_per_learner=train_batch_size, minibatch_size=minibatch_size,
                   num_epochs=num_epochs)
+        .callbacks(on_episode_end=team_return_callback(env_config))
         .multi_agent(policies=set(agent_ids),
                      policy_mapping_fn=lambda agent_id, episode, **kwargs: agent_id)
         .rl_module(rl_module_spec=MultiRLModuleSpec(rl_module_specs={

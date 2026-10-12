@@ -10,9 +10,9 @@ Tasks (--task):
     bat10-sto1 : batch 10 -> std 1
     sto1-bat10 : std 1 -> batch 10
 
-    python continual_batsto.py                                   # task sto1-bat10, lr 0.003
+    python continual_batsto.py                                   # task sto1-bat10, lr 0.0003
     python continual_batsto.py --task bat10-sto1 --rounds 1
-    python continual_batsto.py --lr 0.03 0.003 0.0003           # grid search, one lr after another
+    python continual_batsto.py --lr 0.001 0.0003 0.0001          # grid search, one lr after another
 
 The training curve (mean episode return per iteration, cumulated environment steps) is written to TensorBoard,
 <models_dir>/tb/, one scalar per phase, and plotted at the end of the task (one figure per learning rate, in the
@@ -50,7 +50,7 @@ from plot_continual import plot_continual
 
 
 OBS_ROWS = 9
-LRS = [0.003]
+LRS = [3e-4]
 TIMESTEPS_PER_PHASE = 200000
 NUM_ENV_RUNNERS = 1
 NUM_GPUS = 0

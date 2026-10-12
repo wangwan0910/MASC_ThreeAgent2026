@@ -8,9 +8,9 @@ Tasks (--task):
     3-7-10 : batch size 3 -> 7 -> 10
     10-7-3 : batch size 10 -> 7 -> 3
 
-    python continual_learning/continual_bat.py                                   # task 10-7-3, lr 0.003
+    python continual_learning/continual_bat.py                                   # task 10-7-3, lr 0.0003
     python continual_learning/continual_bat.py --task 3-7-10 --rounds 1
-    python continual_learning/continual_bat.py --lr 0.03 0.003 0.0003           # grid search, one lr after another
+    python continual_learning/continual_bat.py --lr 0.001 0.0003 0.0001          # grid search, one lr after another
 
 The training curve (mean episode return per iteration, cumulated environment steps) is written to TensorBoard,
 <models_dir>/tb/, one scalar per phase, and plotted at the end of the task (one figure per learning rate, in the
@@ -49,7 +49,7 @@ from plot_continual import plot_continual
 
 
 OBS_ROWS = 9
-LRS = [0.003]
+LRS = [3e-4]
 TIMESTEPS_PER_PHASE = 200000
 NUM_ENV_RUNNERS = 1
 NUM_GPUS = 0

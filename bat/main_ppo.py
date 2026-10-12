@@ -18,16 +18,16 @@ If no trial converged, no PPO_<env>.png is written (a diagnostic figure <name>_N
 directory instead) and the script exits with code 1. The status of every trial is saved in training_status.json.
 
 CSV data (only for a converged trial, never for the continual learning scripts), in csv_results/ (--csv-dir):
-    <tag>_curve.csv       : training curve of the figure (step, episode return, smoothed episode return)
+    <tag>_curve.csv       : training curve of the figure (step, team return, smoothed team return)
     <tag>_trajectory.csv  : one deterministic episode of the trained policies (state, action, demand and cost of every
                             day, save_to_csv of the environment), demand seed --csv-seed
     tag = <algo>_<env>_<demand>_lr<lr>_<network>_<steps at convergence>_<date-time>,
-    e.g. PPO_Sto1_mu2-std1_lr0.003_mlp64x64_1.65Msteps_20261011-170501. A new run never overwrites an older file
+    e.g. PPO_Sto1_mu2-std1_lr0.0003_mlp64x64_1.65Msteps_20261011-170501. A new run never overwrites an older file
     (date-time in the name, and a _2, _3 ... suffix if the name already exists).
 
-    python main_ppo.py --env BatSupplyEnv-v1             # batch 10 -> PPO_Bat10.png, lr 0.003
+    python main_ppo.py --env BatSupplyEnv-v1             # batch 10 -> PPO_Bat10.png, lr 0.0003
     python main_ppo.py --env BatSupplyEnv-v3 --num-env-runners 4
-    python main_ppo.py --lr 0.03 0.003 0.0003            # grid search over the learning rate (one Tune trial per lr)
+    python main_ppo.py --lr 0.001 0.0003 0.0001          # grid search over the learning rate (one Tune trial per lr)
     tensorboard --logdir tu_logs                         # watch the training
 """
 
@@ -45,7 +45,7 @@ from collections import defaultdict
 import numpy as np
 from ray import tune
 
-from marl_env import ENV_SHORT_NAMES, SupplyChainMARLEnv, build_ppo_config, init_ray
+from marl_env import DEFAULT_REWARD_SCALE, ENV_SHORT_NAMES, REWARD_MODES, SupplyChainMARLEnv, build_ppo_config, init_ray
 from plot_tb import plot_run, select_trial, smooth
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -55,8 +55,21 @@ def parse_args(default_name="PPO", default_dir="tu"):
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", default="BatSupplyEnv-v1",
                         help="environment id (see marl_env.ENV_IDS) or 'module:Class'")
-    parser.add_argument("--reward-scale", type=float, default=1.0)
-    parser.add_argument("--lr", type=float, nargs="+", default=[0.003],
+    parser.add_argument("--reward-scale", type=float, default=DEFAULT_REWARD_SCALE,
+                        help="rewards are multiplied by this factor (costs are 1e4 - 1e6 per episode)")
+    parser.add_argument("--reward-mode", default="team", choices=sorted(REWARD_MODES),
+                        help="team: minus the total cost for every agent; individual: minus its own cost; "
+                             "mixed: (1 - team_weight) * own + team_weight * total")
+    parser.add_argument("--team-weight", type=float, default=0.5, help="weight of the total cost (mixed mode)")
+    parser.add_argument("--no-final-costs", dest="final_costs", action="store_false",
+                        help="do not charge the costs not settled at the end of the episode (old behaviour)")
+    parser.add_argument("--termination-penalty", type=float, default=0.0,
+                        help="extra cost of every agent when the episode terminates with too many stockout days")
+    parser.add_argument("--max-stockout-days", type=int, default=None,
+                        help="terminate the episode after this many stockout days (default: environment value 12)")
+    parser.add_argument("--no-stockout-termination", dest="max_stockout_days", action="store_const", const=0,
+                        help="never terminate on stockouts: every episode runs the T days")
+    parser.add_argument("--lr", type=float, nargs="+", default=[3e-4],
                         help="learning rate; several values -> grid search")
     # 3000 iterations x 3000 timesteps as in the stable-baselines3 version; one timestep is now one decision (reorder day)
     parser.add_argument("--total-timesteps", type=int, default=3000 * 3000)
@@ -91,7 +104,9 @@ def parse_args(default_name="PPO", default_dir="tu"):
 
 
 def env_config_from_args(args):
-    return {"env_class": args.env, "reward_scale": args.reward_scale}
+    return {"env_class": args.env, "reward_scale": args.reward_scale, "reward_mode": args.reward_mode,
+            "team_weight": args.team_weight, "final_costs": args.final_costs,
+            "termination_penalty": args.termination_penalty, "max_stockout_days": args.max_stockout_days}
 
 
 def lr_search_space(lrs):
@@ -274,7 +289,8 @@ def save_csv(args, logdir, best, algo, net):
     curve = unique_path(os.path.join(args.csv_dir, f"{tag}_curve.csv"))
     with open(curve, "x", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["step", "episode_return_mean", "episode_return_mean_smoothed"])
+        # team return: minus the total cost of the supply chain, original cost units (plot_tb.RETURN_TAGS)
+        writer.writerow(["step", "team_return", "team_return_smoothed"])
         writer.writerows(zip(steps.astype(int), returns, smooth(returns)))
 
     trajectory = unique_path(os.path.join(args.csv_dir, f"{tag}_seed{args.csv_seed}_trajectory.csv"))
@@ -328,7 +344,7 @@ def train(args, config, algo="PPO", net="mlp64x64"):
         best = max(status, key=lambda s: -np.inf if s["episode_return_mean"] is None else s["episode_return_mean"])
         try:
             plot_run(logdir, label=f"{label} (NOT CONVERGED)", out=os.path.join(logdir, f"{name}_NOT_CONVERGED.png"),
-                     lr=best["lr"])
+                     lr=best["lr"], env=env_short_name(args.env))
         except (FileNotFoundError, ValueError, KeyError) as e:
             print("no diagnostic figure:", e)
         print(f"no trial converged, {name}.png not written; see {logdir}/training_status.json")
@@ -337,7 +353,8 @@ def train(args, config, algo="PPO", net="mlp64x64"):
     # training curve of the best converged trial, e.g. PPO_Sto1.png in this directory (a copy stays in the log directory)
     best = max(converged, key=lambda s: s["episode_return_mean"])
     print("best lr:", best["lr"], "checkpoint:", best["checkpoint"])
-    out = plot_run(logdir, label=label, out=os.path.join(HERE, f"{name}.png"), lr=best["lr"])
+    out = plot_run(logdir, label=label, out=os.path.join(HERE, f"{name}.png"), lr=best["lr"],
+                   env=env_short_name(args.env))
     shutil.copy(out, logdir)
     save_csv(args, logdir, best, algo, net)
     return results, status

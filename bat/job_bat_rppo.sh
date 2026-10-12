@@ -25,12 +25,16 @@
 # Submit from this directory:
 #   sbatch job_bat_rppo.sh                                  all three environments
 #   sbatch --array=0 job_bat_rppo.sh                        only task 0
-#   sbatch job_bat_rppo.sh --lr 0.03 0.003 0.0003           extra arguments go to main_rppo.py (here: lr grid search,
+#   sbatch job_bat_rppo.sh --lr 0.001 0.0003 0.0001          extra arguments go to main_rppo.py (here: lr grid search,
 #                                                         the trials run in parallel inside each task)
 
 ENVS=(BatSupplyEnv-v1 BatSupplyEnv-v2 BatSupplyEnv-v3)
 NUM_ENV_RUNNERS=4        # sampling workers per trial (1 + 4 CPUs per trial; 16 CPUs -> up to 3 lr trials at once)
 TIME_BUDGET_HOURS=25     # below --time=26:00:00: leaves time for the final checkpoint and the figure
+REWARD_MODE=${REWARD_MODE:-team}   # team / individual / mixed, e.g. REWARD_MODE=individual sbatch job_bat_rppo.sh
+# no stockout termination: every episode runs the T = 100 days. With the termination after 12 stockout days the agents
+# learned to end the episodes early instead of serving the demand (smoke tests of 2026-10-12)
+ENV_ARGS="--reward-mode $REWARD_MODE --no-stockout-termination --dir tu1_$REWARD_MODE"   # logs in tu1_<mode>_logs/
 
 set -eo pipefail
 
@@ -45,4 +49,4 @@ export PYTHONUNBUFFERED=1             # print the training progress to the .out 
 ENV=${ENVS[${SLURM_ARRAY_TASK_ID:-0}]}
 echo "job ${SLURM_JOB_ID:-local} task ${SLURM_ARRAY_TASK_ID:-0} on $(hostname), ${SLURM_CPUS_PER_TASK:-?} cpus, env $ENV, dir $(pwd)"
 python -c "import ray, torch, gymnasium, tensorboard; print('ray', ray.__version__, 'torch', torch.__version__)"
-python main_rppo.py --env "$ENV" --num-env-runners "$NUM_ENV_RUNNERS" --time-budget-hours "$TIME_BUDGET_HOURS" "$@"
+python main_rppo.py --env "$ENV" --num-env-runners "$NUM_ENV_RUNNERS" --time-budget-hours "$TIME_BUDGET_HOURS" $ENV_ARGS "$@"
