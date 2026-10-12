@@ -1,7 +1,9 @@
-"""Web interface (masc.ui.server): forms, commands, results, simulation, HTTP token."""
+"""Web interface (masc.ui.server): forms, commands, local queue, results, simulation, HTTP token, platform."""
 import json
 import os
+import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -32,15 +34,6 @@ def test_build_argv_uses_the_defaults_of_the_command():
 def test_build_argv_rejects_bad_values(values):
     with pytest.raises(ui.UIError):
         ui.build_argv("train", values)
-
-
-def test_sbatch_script():
-    argv, _ = ui.build_argv("continual", {"--rounds": "1"})
-    script = ui.sbatch_script("continual", ["0-01-1", "sto1-bat10"], argv, "/tmp/runs", ui.default_slurm("continual"))
-    assert "#SBATCH --array=0-1" in script and "ITEMS=(0-01-1 sto1-bat10)" in script
-    assert '-m masc.continual --task "$ITEM" --rounds 1' in script
-    with pytest.raises(ui.UIError):
-        ui.sbatch_script("train", ["BatSupplyEnv-v1"], [], "/tmp", {**ui.default_slurm("train"), "mem": "1G; rm -rf"})
 
 
 def test_safe_path(tmp_path):
@@ -84,7 +77,7 @@ def test_simulate():
 
 
 def test_http_token(tmp_path):
-    server, app, url = ui.serve(tmp_path, port=0, open_message=False)
+    server, app, url = ui.serve(tmp_path, port=0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
@@ -102,3 +95,48 @@ def test_http_token(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def wait_until(predicate, timeout=30):
+    end = time.time() + timeout
+    while time.time() < end:
+        if predicate():
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def test_local_queue_runs_one_after_the_other(tmp_path, monkeypatch):
+    def fake_command(kind, item, argv):
+        return [sys.executable, "-c", f"import time; time.sleep(0.5); print('ran {item}'); raise SystemExit({len(item) % 2})"]
+    monkeypatch.setattr(ui, "python_command", fake_command)
+    queue = ui.LocalQueue(str(tmp_path))
+    first = queue.submit("train", ["BatSupplyEnv-v1", "BatSupplyEnv-v2"], [])
+    second = queue.submit("continual", ["0-01-1"], [])
+    third = queue.submit("continual", ["1-01-0"], [])
+    assert queue.cancel(third["id"])["message"]                       # cancelled while queued: never runs
+    assert wait_until(lambda: second["status"] == "已完成")
+    assert first["finished"] <= second["started"]                      # one after the other
+    assert first["exit_codes"] == [1, 1] and second["exit_codes"] == [0]
+    log = (tmp_path / first["log"]).read_text()
+    assert "ran BatSupplyEnv-v1" in log and "ran BatSupplyEnv-v2" in log and "[exit 1]" in log
+    assert third["status"] == "已取消" and third["started"] is None
+
+
+def test_cancel_running_command(tmp_path, monkeypatch):
+    monkeypatch.setattr(ui, "python_command", lambda kind, item, argv: [sys.executable, "-c", "import time; time.sleep(60)"])
+    queue = ui.LocalQueue(str(tmp_path))
+    run = queue.submit("train", ["BatSupplyEnv-v1"], [])
+    assert wait_until(lambda: run["process"] is not None)
+    queue.cancel(run["id"])
+    assert wait_until(lambda: run["finished"] is not None, timeout=20)
+    assert run["status"] == "已取消" and run["exit_codes"][0] != 0
+
+
+def test_mac_only(monkeypatch):
+    monkeypatch.delenv("MASC_UI_ANY_PLATFORM", raising=False)
+    monkeypatch.setattr(sys, "platform", "linux")
+    with pytest.raises(SystemExit):
+        ui.check_platform()
+    monkeypatch.setattr(sys, "platform", "darwin")
+    ui.check_platform()

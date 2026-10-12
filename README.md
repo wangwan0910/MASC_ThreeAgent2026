@@ -194,7 +194,7 @@ pip install git+https://github.com/wangwan0910/MASC_ThreeAgent2026.git  # 直接
 | `masc-plot` | `python -m masc.plotting` | 从 TensorBoard 日志重画训练曲线 |
 | `masc-plot-continual` | — | 重画连续学习曲线 |
 | `masc-check` | `python -m masc.marl_env` | 检查 6 个环境能否运行 |
-| `masc-ui` | `python -m masc.ui.server` | 网页界面（第 8a 节） |
+| `masc-ui` | `python -m masc.ui.server` | 网页界面，仅 Mac 本地（第 8a 节） |
 
 每个命令都有 `--help`。
 
@@ -366,38 +366,34 @@ masc-plot-continual PPOcon-bat_models/10-7-3/<时间>/lr=0.0003/tb --out PPOcon.
 
 ## 8a. 网页界面（masc-ui）
 
-`masc-ui` 在本机启动一个网页界面（只用 Python 标准库，不需要额外安装），在浏览器里完成设置、提交与查看：
+`masc-ui` 是**只在 Mac 本地运行**的网页界面（只用 Python 标准库，不需要额外安装），与 Iridis 无关：
+在浏览器里完成设置，训练直接在 Mac 上运行。Iridis 上照常用命令行和 `jobs/` 里的 SLURM 脚本；
+在非 macOS 系统上 `masc-ui` 会拒绝启动并给出提示。
+
+```bash
+# 在 Mac 上：从 GitHub 拉取代码并安装
+git pull
+pip install -r requirements.txt && pip install -e .
+mkdir -p runs && masc-ui --root runs          # 自动在浏览器中打开 http://localhost:8765/?token=...
+```
 
 | 页面 | 功能 |
 |---|---|
-| 训练 | 勾选环境、选择 PPO / RPPO；参数表单由 `masc-train` 的命令行自动生成（新增参数自动出现，修改过的值高亮）；预设"论文设置 / 快速测试"；实时预览完整命令与 sbatch 脚本；提交 SLURM 作业或本地运行 |
-| 连续学习 | 勾选任务（6 个），参数同 `masc-continual`，提交方式同上 |
-| 作业 | 当前用户的 SLURM 作业（`squeue`）、最近两天结束的作业（`sacct`）、本地运行；查看 `.out/.err` 日志（自动刷新）、取消作业 |
+| 训练 | 勾选环境、选择 PPO / RPPO；参数表单由 `masc-train` 的命令行自动生成（新增参数自动出现，修改过的值高亮）；预设"论文设置 / 快速测试"；实时预览完整命令；提交后在本机运行 |
+| 连续学习 | 勾选任务（6 个），参数同 `masc-continual` |
+| 运行 | 本机运行队列：状态、当前环境、退出码、日志（自动刷新）、取消 |
 | 结果 | 结果目录下所有运行（单环境训练、连续学习，运行中的也会显示）；交互式训练曲线（多种子显示均值 ± std 阴影）、trial 状态与 `would_stop`、运行目录里的图；用 `masc-plot` 重新制图 |
 | 环境探索 | 给定三级订货量和再订货点，模拟固定策略的平均总成本、各级成本、库存与每日成本曲线；网格搜索最优固定策略 |
 
-在 Iridis 上使用：
-
-```bash
-# 1. 在登录节点上启动（结果目录 runs/：作业从这里提交，输出都写在这里）
-conda activate MASC
-cd /iridisfs/scratch/ww1a23/MASC_Code
-masc-ui --root runs
-#   masc-ui 0.1.0 on login6003, results root .../runs
-#     open:  http://localhost:8765/?token=xxxxxxxx
-#     from your computer: ssh -N -L 8765:localhost:8765 ww1a23@login6003...
-
-# 2. 在自己的电脑上建 SSH 隧道（必须连到运行 masc-ui 的那个登录节点），再在浏览器里打开上面打印的完整网址
-ssh -N -L 8765:localhost:8765 ww1a23@<登录节点>
-```
-
-- 提交的 SLURM 作业是一个生成的 sbatch 脚本（保存在 `<结果目录>/ui_jobs/`），每个环境 / 任务一个数组任务，
-  用启动 `masc-ui` 的那个 Python 运行 `python -m masc.train ...`；同样有随机启动延迟和一次自动重试。
+- **运行方式**：提交的命令（`python -m masc.train ...`，用启动 `masc-ui` 的那个 Python）在结果目录里运行，
+  **依次执行**：同一时间只运行一个，避免多个 Ray 训练争用笔记本的 CPU；日志在 `<结果目录>/ui_local/`。
+  关闭 `masc-ui`（Ctrl-C）会停止正在运行的训练。
+- 每个 trial 占 1 + `--num-env-runners` 个 CPU，预设里设为 1；多种子的 trial 在 CPU 不够时由 Ray Tune 自动排队。
+  "论文设置"（5 种子 × 2M 步）在笔记本上需要数小时，正式实验建议仍在 Iridis 上用 `jobs/job_train.sh` 跑。
+- **查看 Iridis 上的结果**：把日志 `rsync` 到 Mac 的结果目录（第 9 节），"结果"页就能显示曲线、图并重新制图。
 - 每个参数在运行前都用 `masc-train` / `masc-continual` 自己的 argparse 校验，表单里的错误会直接显示。
-- **安全**：只监听 127.0.0.1；登录节点是多人共用的，所以每次启动都会生成随机令牌，所有接口都要带令牌
-  （网址里的 `?token=...`）。不要把网址发给别人，也不要用 `--host 0.0.0.0`。
-- 不要选择"本地运行"在登录节点上训练（界面会提示）；本地运行适合自己的电脑或交互式计算节点。
-- 在 Mac 上也可以直接用：`pip install -e .` 后 `masc-ui --root runs`，浏览器打开打印的网址（没有 SLURM 时只能本地运行）。
+- **安全**：只监听 127.0.0.1，每次启动生成随机令牌（启动时打开的网址里带着），其他网页不能借它在本机执行命令。
+- 其他选项：`--port 8800`（默认 8765，被占用时自动换下一个）、`--no-browser`（不自动打开浏览器）。
 
 ---
 

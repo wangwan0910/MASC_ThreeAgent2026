@@ -41,7 +41,6 @@ runs/
 /batsto/
 analysis_logs/
 .venv*/
-# outputs of the web interface (masc-ui): generated sbatch scripts, local run logs, re-plotted figures
-ui_jobs/
+# outputs of the web interface (masc-ui): logs of the local runs, re-plotted figures
 ui_local/
 ui_plots/

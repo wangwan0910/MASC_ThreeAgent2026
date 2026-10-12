@@ -65,9 +65,9 @@ th { color: var(--muted); font-weight: 600; font-size: 12px; }
 tr.click { cursor: pointer; } tr.click:hover, tr.selected { background: var(--hover); }
 .table-wrap { overflow-x: auto; }
 .state { font-weight: 600; }
-.state.RUNNING, .state.运行中, .state.converged, .state.completed, .state.COMPLETED { color: var(--ok); }
-.state.FAILED, .state.collapsed, .state.diverged, .state.CANCELLED, .state.已取消 { color: var(--danger); }
-.state.PENDING, .state.stalled, .state.no_learning, .state.未完成 { color: var(--warn); }
+.state.运行中, .state.已完成, .state.converged, .state.completed { color: var(--ok); }
+.state.collapsed, .state.diverged, .state.已取消 { color: var(--danger); }
+.state.排队中, .state.stalled, .state.no_learning, .state.未完成 { color: var(--warn); }
 canvas { width: 100%; display: block; }
 .chart { position: relative; }
 .figs { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
@@ -91,7 +91,7 @@ dialog img { max-width: 90vw; max-height: 85vh; }
 <nav id="nav">
   <button data-tab="train" class="active">训练</button>
   <button data-tab="continual">连续学习</button>
-  <button data-tab="jobs">作业</button>
+  <button data-tab="jobs">运行</button>
   <button data-tab="results">结果</button>
   <button data-tab="explore">环境探索</button>
 </nav>
@@ -121,7 +121,7 @@ dialog img { max-width: 90vw; max-height: 85vh; }
             <button class="btn" id="preset-quick">快速测试</button>
             <button class="btn" id="preset-default">命令默认值</button>
           </div>
-          <p class="small">论文设置：团队奖励、不因缺货终止、lr 1e-4、5 个种子、固定 2M 步。快速测试：2 个种子、5 万步、30 分钟。</p>
+          <p class="small">论文设置：团队奖励、不因缺货终止、lr 1e-4、5 个种子、固定 2M 步（在笔记本上需要数小时）。快速测试：2 个种子、5 万步，几分钟。</p>
         </div>
         <div class="card" id="train-target"></div>
       </div>
@@ -168,22 +168,19 @@ dialog img { max-width: 90vw; max-height: 85vh; }
   <section class="tab" id="tab-jobs">
     <div class="card">
       <div class="row" style="justify-content:space-between">
-        <h2 style="margin:0">运行中 / 排队中的 SLURM 作业</h2>
+        <h2 style="margin:0">本机运行队列</h2>
         <div class="row">
-          <label class="check"><input type="checkbox" id="jobs-auto" checked> 每 20 秒刷新</label>
+          <label class="check"><input type="checkbox" id="jobs-auto" checked> 每 5 秒刷新</label>
           <button class="btn" id="jobs-refresh">刷新</button>
         </div>
       </div>
-      <div class="table-wrap"><table id="jobs-queue"></table></div>
-      <h3>最近两天结束的作业</h3>
-      <div class="table-wrap"><table id="jobs-done"></table></div>
-      <h3>本地运行</h3>
+      <p class="small">提交的运行在这台电脑上依次执行（同一时间只运行一个，避免多个训练争用 CPU）。关闭 masc-ui 会停止正在运行的训练。
+        <code>masc-train</code> 没有 trial 收敛时退出码为 1，这不是程序错误。</p>
       <div class="table-wrap"><table id="jobs-local"></table></div>
     </div>
     <div class="card">
       <h2>日志 <span class="small" id="log-path"></span></h2>
-      <div class="row" id="log-files" style="margin-bottom:8px"></div>
-      <pre id="log-text">点击作业的“日志”查看输出</pre>
+      <pre id="log-text">点击运行的“日志”查看输出</pre>
     </div>
   </section>
 
@@ -436,35 +433,13 @@ function markChanged(kind) {
   }
 }
 
-// target (SLURM / local) card
+// run card: the commands run on this computer, in a queue
 function buildTarget(kind, container) {
   container.innerHTML = "";
-  const slurmOk = META.has_slurm;
-  container.append(el("h2", { text: "运行方式" }));
-  const r1 = el("input", { type: "radio", name: kind + "-target", value: "slurm", checked: slurmOk, disabled: !slurmOk });
-  const r2 = el("input", { type: "radio", name: kind + "-target", value: "local", checked: !slurmOk });
-  container.append(el("label", { class: "radio" }, r1, "提交 SLURM 作业"), el("label", { class: "radio" }, r2, "本地运行"));
-  const warn = el("div", { class: "msg warn" });
-  const slurmBox = el("div", { class: "fields", style: "margin-top:10px" });
-  const fields = [["job_name", "作业名", `masc_${kind}`], ["partition", "分区", "batch"], ["cpus", "CPU 数", "16"],
-    ["mem", "内存", "20G"], ["time", "时限", "26:00:00"], ["mail", "邮件（可空）", ""]];
-  const inputs = {};
-  for (const [k, label, def] of fields) {
-    const i = el("input", { type: "text", value: def }); i.addEventListener("input", () => changed(kind)); inputs[k] = i;
-    slurmBox.append(el("div", { class: "field" }, el("label", { text: label }), i));
-  }
-  container.append(slurmBox, warn,
-    el("p", { class: "small", text: "SLURM：每个环境 / 任务一个数组任务，脚本保存在结果目录的 ui_jobs/ 下。本地：在这台机器上依次运行，日志在 ui_local/。" }));
-  const update = () => {
-    const local = r2.checked; slurmBox.style.display = local ? "none" : "";
-    warn.textContent = local && META.login_node ? "这是登录节点：不要在登录节点上训练，请提交 SLURM 作业。" :
-      (!slurmOk ? "没有找到 SLURM（sbatch），只能本地运行。" : "");
-    changed(kind);
-  };
-  r1.addEventListener("change", update); r2.addEventListener("change", update); update();
-  container._get = () => ({ target: r2.checked ? "local" : "slurm",
-    slurm: Object.fromEntries(Object.entries(inputs).map(([k, i]) => [k, i.value.trim()])) });
-  container._set = (k, v) => { inputs[k].value = v; };
+  container.append(el("h2", { text: "运行" }),
+    el("p", { class: "small", text: `在这台电脑上运行（${META.cpus} 个 CPU），结果写到 ${META.root}。` +
+      "多个环境 / 任务依次运行；提交多个运行时排队，同一时间只运行一个。" }),
+    el("p", { class: "small", text: "每个 trial 占 1 + --num-env-runners 个 CPU；多个种子 / 学习率的 trial 在 CPU 不够时自动排队。" }));
 }
 
 // items (environments / tasks)
@@ -483,15 +458,13 @@ const previewKinds = { train: "train", continual: "continual" };
 function currentKind(tab) { return tab === "train" ? document.querySelector("input[name=algo]:checked").value : "continual"; }
 function request(tab) {
   const kind = currentKind(tab), formKind = tab === "train" ? "train" : "continual";
-  const t = $(tab + "-target")._get();
   // only the values changed in the form: the command compares them with its own defaults (RPPO: --dir tu1)
   const values = {};
   for (const [opt, { field }] of Object.entries(FORMS[formKind].inputs)) {
     const v = FORMS[formKind].values[opt];
     if (field.kind === "flag" ? v === true : String(v ?? "") !== String(field.default ?? "")) values[opt] = v;
   }
-  return { kind, items: selectedItems($(tab + "-items")), values, target: t.target,
-    slurm: { ...t.slurm, cpus: t.slurm.cpus, job_name: t.slurm.job_name || `masc_${kind}` } };
+  return { kind, items: selectedItems($(tab + "-items")), values };
 }
 const refreshPreview = {};
 function changed(kind) {
@@ -501,21 +474,19 @@ function changed(kind) {
 }
 function setupCommandTab(tab) {
   refreshPreview[tab] = debounce(async () => {
-    if (!$(tab + "-target")._get) return;
     const req = request(tab);
     try {
       const p = await api("preview", req);
-      $(tab + "-preview").textContent = req.target === "local" ? p.commands.join("\n\n") : p.script;
+      $(tab + "-preview").textContent = p.commands.join("\n\n");
       setMsg(tab + "-msg", ""); $(tab + "-submit").disabled = false;
     } catch (e) { $(tab + "-preview").textContent = ""; setMsg(tab + "-msg", e.message, "error"); $(tab + "-submit").disabled = true; }
   }, 250);
   $(tab + "-items").addEventListener("itemschange", () => refreshPreview[tab]());
   $(tab + "-submit").addEventListener("click", async () => {
     const req = request(tab);
-    const what = req.target === "local" ? "在本机运行" : "提交 SLURM 作业";
-    if (!confirm(`${what}：${req.items.length} 个${tab === "train" ? "环境" : "任务"}（${req.items.join(", ")}）？`)) return;
+    if (!confirm(`在本机运行 ${req.items.length} 个${tab === "train" ? "环境" : "任务"}（${req.items.join(", ")}）？`)) return;
     $(tab + "-submit").disabled = true;
-    try { const r = await api("submit", req); setMsg(tab + "-msg", r.message + (r.script ? `（脚本 ${r.script}）` : ""), "ok"); }
+    try { const r = await api("submit", req); setMsg(tab + "-msg", r.message + "，可在“运行”页查看日志", "ok"); }
     catch (e) { setMsg(tab + "-msg", e.message, "error"); }
     finally { $(tab + "-submit").disabled = false; }
   });
@@ -523,48 +494,28 @@ function setupCommandTab(tab) {
 
 const PRESETS = {
   paper: { "--no-stockout-termination": true, "--lr": "0.0001", "--seeds": "0 1 2 3 4", "--no-early-stop": true,
-    "--total-timesteps": "2000000", "--num-env-runners": "2", "--dir": "tu_seeds" },
+    "--total-timesteps": "2000000", "--num-env-runners": "1", "--dir": "tu_seeds" },
   quick: { "--no-stockout-termination": true, "--lr": "0.0003", "--seeds": "0 1", "--no-early-stop": true,
-    "--total-timesteps": "50000", "--num-env-runners": "2", "--dir": "tu_test", "--tag": "test" },
+    "--total-timesteps": "50000", "--num-env-runners": "1", "--dir": "tu_test", "--tag": "test" },
 };
 
-// ---------------------------------------------------------------- jobs
+// ---------------------------------------------------------------- local runs
 let logFile = null;
+function ago(t) { return t ? new Date(t * 1000).toLocaleTimeString() : ""; }
 async function loadJobs() {
   try {
-    const j = await api("jobs");
-    const q = $("jobs-queue"); q.innerHTML = "";
-    q.append(el("tr", {}, ...["作业号", "名称", "状态", "已运行", "时限", "节点 / 原因", "目录", ""].map(t => el("th", { text: t }))));
-    if (!j.has_slurm) q.append(el("tr", {}, el("td", { colspan: 8, text: "这台机器上没有 SLURM" })));
-    else if (!j.squeue.length) q.append(el("tr", {}, el("td", { colspan: 8, text: "没有运行中或排队的作业" })));
-    for (const r of j.squeue) q.append(el("tr", {}, el("td", { text: r.id }), el("td", { text: r.name }),
-      el("td", { class: "state " + r.state, text: r.state }), el("td", { text: r.time }), el("td", { text: r.limit }),
-      el("td", { text: r.reason }), el("td", { class: "small", text: r.workdir }),
-      el("td", {}, el("button", { class: "btn", text: "日志", onclick: () => showJobLogs(r.id) }), " ",
-        el("button", { class: "btn danger", text: "取消", onclick: () => cancelJob(r.id, false) }))));
-    const d = $("jobs-done"); d.innerHTML = "";
-    d.append(el("tr", {}, ...["作业号", "名称", "状态", "用时", "结束", "目录", ""].map(t => el("th", { text: t }))));
-    for (const r of j.sacct.slice(0, 60)) d.append(el("tr", {}, el("td", { text: r.id }), el("td", { text: r.name }),
-      el("td", { class: "state " + r.state.split(" ")[0], text: r.state }), el("td", { text: r.elapsed }), el("td", { text: r.end }),
-      el("td", { class: "small", text: r.workdir }), el("td", {}, el("button", { class: "btn", text: "日志", onclick: () => showJobLogs(r.id) }))));
+    const j = await api("runs_local");
     const l = $("jobs-local"); l.innerHTML = "";
-    l.append(el("tr", {}, ...["编号", "命令", "环境 / 任务", "状态", ""].map(t => el("th", { text: t }))));
-    if (!j.local.length) l.append(el("tr", {}, el("td", { colspan: 5, text: "没有本地运行" })));
-    for (const r of j.local) l.append(el("tr", {}, el("td", { text: r.id }), el("td", { text: r.kind }),
+    l.append(el("tr", {}, ...["编号", "命令", "环境 / 任务", "状态", "当前", "退出码", "提交", "开始", "结束", ""].map(t => el("th", { text: t }))));
+    if (!j.runs.length) l.append(el("tr", {}, el("td", { colspan: 10, text: "还没有运行：在“训练”或“连续学习”页提交" })));
+    for (const r of j.runs) l.append(el("tr", {}, el("td", { text: r.id }), el("td", { text: r.kind }),
       el("td", { text: r.items.join(", ") }), el("td", { class: "state " + r.status, text: r.status }),
+      el("td", { text: r.current || "" }), el("td", { text: r.exit_codes.join(", ") }),
+      el("td", { text: ago(r.submitted) }), el("td", { text: ago(r.started) }), el("td", { text: ago(r.finished) }),
       el("td", {}, el("button", { class: "btn", text: "日志", onclick: () => showLog(r.log) }), " ",
-        r.status === "运行中" ? el("button", { class: "btn danger", text: "取消", onclick: () => cancelJob(r.id, true) }) : null)));
+        ["排队中", "运行中"].includes(r.status) ? el("button", { class: "btn danger", text: "取消", onclick: () => cancelRun(r.id) }) : null)));
     if (logFile) showLog(logFile, true);
   } catch (e) { setMsg("global-error", e.message, "error"); }
-}
-async function showJobLogs(id) {
-  try {
-    const r = await api("job_logs?id=" + encodeURIComponent(id));
-    const box = $("log-files"); box.innerHTML = "";
-    if (!r.files.length) { $("log-text").textContent = "没有找到这个作业的输出文件"; return; }
-    for (const f of r.files) box.append(el("button", { class: "btn", text: f.split("/").pop(), onclick: () => showLog(f) }));
-    showLog(r.files[0]);
-  } catch (e) { $("log-text").textContent = e.message; }
 }
 async function showLog(path, quiet) {
   try {
@@ -574,9 +525,9 @@ async function showLog(path, quiet) {
     pre.textContent = r.text || "（空）"; if (!quiet || atEnd) pre.scrollTop = pre.scrollHeight;
   } catch (e) { if (!quiet) $("log-text").textContent = e.message; }
 }
-async function cancelJob(id, local) {
-  if (!confirm(`取消${local ? "本地运行" : "作业"} ${id}？`)) return;
-  try { const r = await api("cancel", { id, local }); setMsg("global-error", r.message, "ok"); loadJobs(); }
+async function cancelRun(id) {
+  if (!confirm(`取消运行 ${id}？`)) return;
+  try { const r = await api("cancel", { id }); setMsg("global-error", r.message, "ok"); loadJobs(); }
   catch (e) { setMsg("global-error", e.message, "error"); }
 }
 
@@ -719,10 +670,9 @@ function showTab(name) {
   if (name === "results") { loadRuns(); if (currentCurves) drawRun(); }
 }
 async function init() {
-  if (!TOKEN) { setMsg("global-error", "网址里没有令牌：请使用 masc-ui 启动时打印的完整网址（含 ?token=...）", "error"); return; }
+  if (!TOKEN) { setMsg("global-error", "网址里没有令牌：请使用 masc-ui 启动时打开 / 打印的完整网址（含 ?token=...）", "error"); return; }
   try { META = await api("meta"); } catch (e) { setMsg("global-error", e.message, "error"); return; }
-  $("info").textContent = `${META.user}@${META.hostname} · 结果目录 ${META.root} · masc ${META.version}` +
-    (META.has_slurm ? " · SLURM 可用" : " · 无 SLURM");
+  $("info").textContent = `${META.hostname} · 结果目录 ${META.root} · ${META.cpus} 个 CPU · masc ${META.version}`;
   $("runs-root").textContent = META.root;
   document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
 
@@ -736,15 +686,14 @@ async function init() {
   buildForm("train", $("train-form")); buildForm("continual", $("continual-form"));
   buildTarget("train", $("train-target")); buildTarget("continual", $("continual-target"));
   setupCommandTab("train"); setupCommandTab("continual");
-  document.querySelectorAll("input[name=algo]").forEach(r => r.addEventListener("change", () => {
-    $("train-target")._set("job_name", "masc_" + currentKind("train")); refreshPreview.train(); }));
-  $("preset-paper").addEventListener("click", () => { setValues("train", PRESETS.paper); $("train-target")._set("time", "26:00:00"); });
-  $("preset-quick").addEventListener("click", () => { setValues("train", PRESETS.quick); $("train-target")._set("time", "00:30:00"); });
+  document.querySelectorAll("input[name=algo]").forEach(r => r.addEventListener("change", () => refreshPreview.train()));
+  $("preset-paper").addEventListener("click", () => setValues("train", PRESETS.paper));
+  $("preset-quick").addEventListener("click", () => setValues("train", PRESETS.quick));
   $("preset-default").addEventListener("click", () => setValues("train", {}));
   setValues("train", PRESETS.paper); setValues("continual", {});
 
   $("jobs-refresh").addEventListener("click", loadJobs);
-  jobsTimer = setInterval(() => { if ($("jobs-auto").checked && $("tab-jobs").classList.contains("active")) loadJobs(); }, 20000);
+  jobsTimer = setInterval(() => { if ($("jobs-auto").checked && $("tab-jobs").classList.contains("active")) loadJobs(); }, 5000);
   $("runs-refresh").addEventListener("click", loadRuns);
   $("runs-filter").addEventListener("change", renderRuns);
   $("run-show-seeds").addEventListener("change", drawRun);
