@@ -173,13 +173,25 @@ class SupplyChainMARLEnv(MultiAgentEnv):
         self.env.end_day(action.flatten())
         trigger, terminated, truncated = self._advance()
 
-        costs = self._costs(trigger, done=terminated or truncated, terminated=terminated)
+        done = terminated or truncated
+        costs = self._costs(trigger, done=done, terminated=terminated)
         rewards = self._rewards(costs)
+        if done:
+            self._record_last_day(costs)
         terminateds = {aid: terminated for aid in self.possible_agents}
         truncateds = {aid: truncated for aid in self.possible_agents}
         terminateds["__all__"], truncateds["__all__"] = terminated, truncated
         infos = {aid: {"team_reward": -sum(costs)} for aid in self.possible_agents}
         return self._obs(self.env.state1), rewards, terminateds, truncateds, infos
+
+
+    def _record_last_day(self, costs):
+        """End the last day of the episode in the wrapped environment (its histories would otherwise stop at the
+        previous day) and book on it the cost charged by this wrapper, so that the cost history of the wrapped
+        environment (reward_history, the Cost column of save_to_csv) adds up to the same episode total cost as
+        team_return: cost of every reorder day, the first one included, + costs settled at the end of the episode."""
+        self.env.end_day(np.zeros(self.n_act_rows * self.n_stage, dtype=np.int64))
+        self.env.reward_history[-1] = -sum(costs)
 
 
 def env_creator(env_config):
@@ -200,15 +212,26 @@ def team_weight(env_config):
 
 def team_return_callback(env_config):
     """on_episode_end callback: logs env_runners/team_return, the episode return of the supply chain in the
-    original cost units (minus the total cost of all agents), whatever the reward mode and reward scale, so that runs
-    with different reward settings can be compared (episode_return_mean is the sum of the agents' scaled rewards).
-    sum of the agents' rewards = -(1 - w + n w) * total cost * reward_scale, see SupplyChainMARLEnv._rewards."""
+    original cost units, whatever the reward mode and reward scale, so that runs with different reward settings can
+    be compared (episode_return_mean is the sum of the agents' scaled rewards).
+    team_return = minus the total cost of the episode: cost of every reorder day, the first one included (caused by
+    the initial state, reported in the reset info), + the costs settled at the end of the episode (final_costs) =
+    sum of the team_reward infos. The same total as evaluate() and as the Cost column of the trajectory CSV."""
     scale = env_config.get("reward_scale", DEFAULT_REWARD_SCALE)
     w = team_weight(env_config)
 
     def on_episode_end(*, episode, metrics_logger, **kwargs):
-        n = len(episode.agent_ids)
-        metrics_logger.log_value("team_return", episode.get_return() / (scale * (1 - w + n * w)), reduce="mean")
+        aid = next(iter(episode.agent_ids))
+        infos = episode.get_infos(agent_ids=[aid])
+        infos = infos.get(aid, []) if isinstance(infos, dict) else infos
+        costs = [i["team_reward"] for i in infos if isinstance(i, dict) and "team_reward" in i]
+        if costs:
+            team_return = float(sum(costs))
+            # cost of the first reorder day (reset info, caused by the initial state), included in team_return
+            metrics_logger.log_value("initial_cost", -costs[0], reduce="mean")
+        else:   # infos not available: from the rewards, without the cost of the first reorder day
+            team_return = episode.get_return() / (scale * (1 - w + len(episode.agent_ids) * w))
+        metrics_logger.log_value("team_return", team_return, reduce="mean")
 
     return on_episode_end
 
@@ -231,11 +254,17 @@ def init_ray(**kwargs):
 
 def build_ppo_config(env_config, lr=3e-4, hiddens=(64, 64), use_lstm=False, lstm_cell_size=64, max_seq_len=20,
                      num_env_runners=1, num_envs_per_env_runner=1, num_gpus=0,
-                     train_batch_size=2048, minibatch_size=256, num_epochs=5, entropy_coeff=0.01):
+                     train_batch_size=2048, minibatch_size=256, num_epochs=5, entropy_coeff=0.01,
+                     vf_clip_param=10.0, clip_params=None):
     """Multi-agent PPO config: one independent policy (RLModule) per supply chain stage.
     Compared with the stable-baselines3 PPO defaults used before (minibatch 64, 10 epochs, no entropy bonus), the
     updates are gentler (320 -> 40 SGD steps per iteration) and the entropy bonus keeps the policies from becoming
-    deterministic too early (the collapses of the first runs followed KL spikes of near-deterministic policies)."""
+    deterministic too early (the collapses of the first runs followed KL spikes of near-deterministic policies).
+    vf_clip_param: the squared error of the value function is clipped at this value (inf: no clipping). A KL spike of
+        the factory policy made the costs jump (team return -7.7e4 -> -6.3e5, Bat10 2026-10-12), the value losses
+        went up to ~3e3 and dominated the clipped gradients of all agents for ~10 iterations; with the reward scale
+        1e-4 the squared errors are normally < 10.
+    clip_params: PPO clip parameter of single agents, e.g. {"factory": 0.1} (the others keep 0.2)."""
     from ray.rllib.algorithms.ppo import PPOConfig
     from ray.rllib.core.rl_module.default_model_config import DefaultModelConfig
     from ray.rllib.core.rl_module.multi_rl_module import MultiRLModuleSpec
@@ -252,12 +281,14 @@ def build_ppo_config(env_config, lr=3e-4, hiddens=(64, 64), use_lstm=False, lstm
         .env_runners(num_env_runners=num_env_runners, num_envs_per_env_runner=num_envs_per_env_runner)
         .learners(num_learners=0, num_gpus_per_learner=num_gpus)
         .training(lr=lr, gamma=0.99, lambda_=0.95, clip_param=0.2, entropy_coeff=entropy_coeff, vf_loss_coeff=0.5,
-                  grad_clip=0.5, vf_clip_param=float("inf"),
+                  grad_clip=0.5, vf_clip_param=vf_clip_param,
                   train_batch_size_per_learner=train_batch_size, minibatch_size=minibatch_size,
                   num_epochs=num_epochs)
         .callbacks(on_episode_end=team_return_callback(env_config))
         .multi_agent(policies=set(agent_ids),
-                     policy_mapping_fn=lambda agent_id, episode, **kwargs: agent_id)
+                     policy_mapping_fn=lambda agent_id, episode, **kwargs: agent_id,
+                     algorithm_config_overrides_per_module={
+                         aid: PPOConfig.overrides(clip_param=c) for aid, c in (clip_params or {}).items()})
         .rl_module(rl_module_spec=MultiRLModuleSpec(rl_module_specs={
             aid: RLModuleSpec(model_config=model_config) for aid in agent_ids}))
     )
