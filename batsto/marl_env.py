@@ -284,7 +284,7 @@ def init_ray(**kwargs):
 def build_ppo_config(env_config, lr=3e-4, hiddens=(64, 64), use_lstm=False, lstm_cell_size=64, max_seq_len=20,
                      num_env_runners=1, num_envs_per_env_runner=1, num_gpus=0,
                      train_batch_size=2048, minibatch_size=256, num_epochs=5, entropy_coeff=0.01,
-                     vf_clip_param=10.0, clip_params=None):
+                     vf_clip_param=10.0, clip_params=None, seed=None):
     """Multi-agent PPO config: one independent policy (RLModule) per supply chain stage.
     Compared with the stable-baselines3 PPO defaults used before (minibatch 64, 10 epochs, no entropy bonus), the
     updates are gentler (320 -> 40 SGD steps per iteration) and the entropy bonus keeps the policies from becoming
@@ -293,7 +293,9 @@ def build_ppo_config(env_config, lr=3e-4, hiddens=(64, 64), use_lstm=False, lstm
         the factory policy made the costs jump (team return -7.7e4 -> -6.3e5, Bat10 2026-10-12), the value losses
         went up to ~3e3 and dominated the clipped gradients of all agents for ~10 iterations; with the reward scale
         1e-4 the squared errors are normally < 10.
-    clip_params: PPO clip parameter of single agents, e.g. {"factory": 0.1} (the others keep 0.2)."""
+    clip_params: PPO clip parameter of single agents, e.g. {"factory": 0.1} (the others keep 0.2).
+    seed: random seed of the networks and of the environments (demand), None: not fixed; a Tune grid search over
+        seeds gives one trial per seed."""
     from ray.rllib.algorithms.ppo import PPOConfig
     from ray.rllib.core.rl_module.default_model_config import DefaultModelConfig
     from ray.rllib.core.rl_module.multi_rl_module import MultiRLModuleSpec
@@ -314,6 +316,7 @@ def build_ppo_config(env_config, lr=3e-4, hiddens=(64, 64), use_lstm=False, lstm
                   train_batch_size_per_learner=train_batch_size, minibatch_size=minibatch_size,
                   num_epochs=num_epochs)
         .callbacks(on_episode_end=team_return_callback(env_config))
+        .debugging(seed=seed)
         .multi_agent(policies=set(agent_ids),
                      policy_mapping_fn=lambda agent_id, episode, **kwargs: agent_id,
                      algorithm_config_overrides_per_module={

@@ -11,7 +11,8 @@ logged before this metric existed fall back to env_runners/episode_return_mean.
 Every single-environment figure has the same style: colour of the environment (ENV_COLORS), legend in the lower
 right corner, both axes in scientific notation and the same axis limits (XLIM, YLIM) for all environments and
 algorithms, so that the figures can be compared side by side.
-    XLIM: 0 - 9e6 steps, the --total-timesteps cap of main_ppo.py (3000 x 3000)
+    XLIM: 0 - 2e6 steps, the training length of the multi-seed runs (all trials have flattened by ~1.5e6 steps in the
+          3e6-step runs of 2026-10-12)
     YLIM: -2e6 - 0, the episode returns of the smoke tests without stockout termination go from -1.7e6 (first
           iteration, random policies) to -6e4
 
@@ -19,6 +20,10 @@ algorithms, so that the figures can be compared side by side.
     python plot_tb.py tu_logs/Sto1/1791700000 --lr 0.0003 --ylim -450000 -50000
 
 If the run is a learning-rate grid search, the best trial (highest return at the end) is plotted, or the one of --lr.
+Several seeds (--seeds): all the trials (seeds) of one learning rate in one figure, mean of the seeds (line) and
+mean +- standard deviation (light band), in the style of PPO_demo.png:
+
+    python plot_tb.py tu_team_logs/Sto1/1791700000 --seeds --label "PPO in Sto1" --out PPO_Sto1.png
 """
 
 import argparse
@@ -40,7 +45,7 @@ ENV_COLORS = {"Bat10": "darkgoldenrod", "Bat7": "goldenrod", "Bat3": "gold",
               "Sto0": "dodgerblue", "Sto01": "lightskyblue", "Sto1": "skyblue"}
 DEFAULT_COLOR = "gray"
 # common axis limits of all single-environment training figures, see the module docstring
-XLIM = (0, 9e6)
+XLIM = (0, 2e6)
 YLIM = (-2e6, 0)
 
 
@@ -127,6 +132,65 @@ def select_trial(logdir, lr=None):
     return best, data[best]
 
 
+def trial_seed(trial_dir):
+    try:
+        with open(os.path.join(trial_dir, "params.json")) as f:
+            return json.load(f).get("seed")
+    except (OSError, ValueError):
+        return None
+
+
+def seed_curves(logdir, lr=None):
+    """(steps, returns of shape (n_seeds, n_steps), seeds) of all the trials of one learning rate (default: the
+    learning rate with the best mean final return), on the environment steps common to all the trials (every
+    iteration samples the same number of steps, so the trials have the same steps)."""
+    trials = find_trials(logdir)
+    if not trials:
+        raise FileNotFoundError(f"no TensorBoard logs under {logdir}")
+    data = {t: read_trial(t) for t in trials}
+    data = {t: d for t, d in data.items() if len(d[1])}
+    by_lr = {}
+    for t in data:
+        by_lr.setdefault(trial_lr(t), []).append(t)
+    if lr is None:
+        def final_return(ts):
+            return np.mean([np.mean(data[t][1][-max(1, len(data[t][1]) // 10):]) for t in ts])
+        lr = max(by_lr, key=lambda k: final_return(by_lr[k]))
+    group = [t for k, ts in by_lr.items() if k is not None and math.isclose(k, lr) for t in ts]
+    if not group:
+        raise ValueError(f"no trial with lr={lr} under {logdir}")
+    group.sort(key=lambda t: (trial_seed(t) is None, trial_seed(t)))
+    common = sorted(set.intersection(*(set(data[t][0].tolist()) for t in group)))
+    returns = np.array([[dict(zip(data[t][0].tolist(), data[t][1]))[s] for s in common] for t in group])
+    return np.array(common), returns, [trial_seed(t) for t in group], lr
+
+
+def plot_seeds(logdir, label, out, lr=None, xlim=XLIM, ylim=YLIM, env=None, smoothing=0.0):
+    """Mean of the seeds (line) and mean +- standard deviation over the seeds (light band) of one learning rate.
+    smoothing > 0: TensorBoard smoothing of every seed before the mean (default: raw curves, as PPO_demo.png)."""
+    steps, returns, seeds, lr = seed_curves(logdir, lr)
+    if smoothing > 0:
+        returns = np.array([smooth(r, smoothing) for r in returns])
+    mean, std = returns.mean(axis=0), returns.std(axis=0)
+    color = env_color(env or env_from_path(logdir))
+    fig, ax = plt.subplots(figsize=(6, 8))
+    ax.fill_between(steps, mean - std, mean + std, color=color, alpha=0.25, linewidth=0)
+    ax.plot(steps, mean, color=color, linewidth=1.0, label=label)
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Episode return")
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
+    sci_axes(ax)
+    ax.legend(loc="lower right")
+    fig.savefig(out, bbox_inches="tight")
+    plt.close(fig)
+    print(f"figure {out}: lr={lr}, {len(seeds)} seeds {seeds}, {len(steps)} points, "
+          f"{int(steps[-1]) if len(steps) else 0} steps, final mean {mean[-50:].mean():.4g} +- {std[-50:].mean():.3g}")
+    if len(steps) and (steps[-1] > xlim[1] or (mean - std).min() < ylim[0] or (mean + std).max() > ylim[1]):
+        print(f"WARNING: the curve goes beyond the common axis limits x {xlim}, y {ylim}")
+    return out, (steps, mean, std, seeds, lr)
+
+
 def plot_curve(steps, returns, label, out, smoothing=0.6, xlim=XLIM, ylim=YLIM, color=DEFAULT_COLOR):
     fig, ax = plt.subplots(figsize=(6, 8))
     ax.plot(steps, returns, color=color, alpha=0.25, linewidth=0.8)
@@ -162,8 +226,15 @@ if __name__ == '__main__':
     parser.add_argument("--lr", type=float, default=None, help="trial to plot (default: the best one)")
     parser.add_argument("--env", default=None, choices=sorted(ENV_COLORS),
                         help="environment for the colour (default: taken from logdir)")
-    parser.add_argument("--smoothing", type=float, default=0.6)
+    parser.add_argument("--seeds", action="store_true",
+                        help="all the trials (seeds) of one lr in one figure: mean line and +- std band")
+    parser.add_argument("--smoothing", type=float, default=None,
+                        help="TensorBoard smoothing (default 0.6, with --seeds 0: raw curves)")
     parser.add_argument("--xlim", type=float, nargs=2, default=XLIM, help="default: common limits of all figures")
     parser.add_argument("--ylim", type=float, nargs=2, default=YLIM, help="default: common limits of all figures")
     a = parser.parse_args()
-    plot_run(a.logdir, a.label, a.out, a.lr, a.smoothing, a.xlim, a.ylim, env=a.env)
+    if a.seeds:
+        plot_seeds(a.logdir, a.label, a.out, a.lr, a.xlim, a.ylim, env=a.env, smoothing=a.smoothing or 0.0)
+    else:
+        plot_run(a.logdir, a.label, a.out, a.lr, 0.6 if a.smoothing is None else a.smoothing, a.xlim, a.ylim,
+                 env=a.env)

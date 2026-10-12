@@ -49,7 +49,7 @@ import numpy as np
 from ray import tune
 
 from marl_env import DEFAULT_REWARD_SCALE, ENV_SHORT_NAMES, REWARD_MODES, SupplyChainMARLEnv, build_ppo_config, init_ray
-from plot_tb import plot_run, select_trial, smooth
+from plot_tb import plot_run, plot_seeds, select_trial, smooth
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLOTTED = ("converged", "completed")   # verdicts of the trials whose figure / CSV are written
@@ -75,6 +75,9 @@ def parse_args(default_name="PPO", default_dir="tu"):
                         help="never terminate on stockouts: every episode runs the T days")
     parser.add_argument("--lr", type=float, nargs="+", default=[3e-4],
                         help="learning rate; several values -> grid search")
+    parser.add_argument("--seeds", type=int, nargs="+", default=None,
+                        help="random seeds (networks and demand); several values -> one trial per seed, the figure "
+                             "shows the mean of the seeds and +- std (plot_tb.plot_seeds). Default: no fixed seed")
     # 3000 iterations x 3000 timesteps as in the stable-baselines3 version; one timestep is now one decision (reorder day)
     parser.add_argument("--total-timesteps", type=int, default=3000 * 3000)
     parser.add_argument("--time-budget-hours", type=float, default=25.0,
@@ -123,9 +126,11 @@ def env_config_from_args(args):
 
 
 def ppo_kwargs(args):
-    """build_ppo_config arguments from the command line (value function clip, clip parameter of the factory)."""
+    """build_ppo_config arguments from the command line (value function clip, clip parameter of the factory, seed)."""
+    seeds = args.seeds or [None]
     return {"vf_clip_param": args.vf_clip,
-            "clip_params": None if args.factory_clip is None else {"factory": args.factory_clip}}
+            "clip_params": None if args.factory_clip is None else {"factory": args.factory_clip},
+            "seed": seeds[0] if len(seeds) == 1 else tune.grid_search(list(seeds))}
 
 
 def lr_search_space(lrs):
@@ -311,21 +316,29 @@ def rollout_episode(checkpoint, env_config, seed=0):
     return env.env
 
 
-def save_csv(args, logdir, best, algo, net):
-    """CSV data of the converged trial `best`: training curve and the trajectory of one episode, see the docstring."""
+def save_csv(args, logdir, best, algo, net, seed_curve=None):
+    """CSV data of the converged trial `best`: training curve and the trajectory of one episode, see the docstring.
+    seed_curve: (steps, mean, std, seeds, lr) of plot_tb.plot_seeds: the curve CSV holds the mean and the std of the
+    seeds instead of the curve of `best` (the trajectory is the one of `best`, the best seed)."""
     env_config = env_config_from_args(args)
     steps_m = f"{best['steps'] / 1e6:.2f}".rstrip("0").rstrip(".")
-    tag = (f"{algo}_{env_short_name(args.env)}{'_' + args.tag if args.tag else ''}_{demand_tag(env_config)}_lr{best['lr']:g}_{net}_{steps_m}Msteps_"
-           f"{datetime.datetime.now():%Y%m%d-%H%M%S}")
+    seeds = f"_{len(seed_curve[3])}seeds" if seed_curve else ""
+    tag = (f"{algo}_{env_short_name(args.env)}{'_' + args.tag if args.tag else ''}_{demand_tag(env_config)}"
+           f"_lr{best['lr']:g}_{net}_{steps_m}Msteps{seeds}_{datetime.datetime.now():%Y%m%d-%H%M%S}")
     os.makedirs(args.csv_dir, exist_ok=True)
 
-    _, (steps, returns) = select_trial(logdir, best["lr"])
     curve = unique_path(os.path.join(args.csv_dir, f"{tag}_curve.csv"))
     with open(curve, "x", newline="") as f:
         writer = csv.writer(f)
         # team return: minus the total cost of the supply chain, original cost units (plot_tb.RETURN_TAGS)
-        writer.writerow(["step", "team_return", "team_return_smoothed"])
-        writer.writerows(zip(steps.astype(int), returns, smooth(returns)))
+        if seed_curve:
+            steps, mean, std, seed_list, _ = seed_curve
+            writer.writerow(["step", "team_return_mean", "team_return_std", "n_seeds"])
+            writer.writerows(zip(steps.astype(int), mean, std, [len(seed_list)] * len(steps)))
+        else:
+            _, (steps, returns) = select_trial(logdir, best["lr"])
+            writer.writerow(["step", "team_return", "team_return_smoothed"])
+            writer.writerows(zip(steps.astype(int), returns, smooth(returns)))
 
     trajectory = unique_path(os.path.join(args.csv_dir, f"{tag}_seed{args.csv_seed}_trajectory.csv"))
     env = rollout_episode(best["checkpoint"], env_config, seed=args.csv_seed)
@@ -366,7 +379,8 @@ def train(args, config, algo="PPO", net="mlp64x64"):
         trial_id = (r.metrics or {}).get("trial_id")
         ret = (r.metrics or {}).get("env_runners", {}).get("episode_return_mean")
         s = stopper.status.get(trial_id, {"status": "time_budget", "reason": "time budget reached before convergence"})
-        status.append({"trial_id": trial_id, "lr": r.config["lr"], "episode_return_mean": ret, **s,
+        status.append({"trial_id": trial_id, "lr": r.config["lr"], "seed": r.config.get("seed"),
+                       "episode_return_mean": ret, **s,
                        "checkpoint": r.checkpoint.path if r.checkpoint else None})
         print(f"lr: {r.config['lr']}  status: {s['status']}  episode_return_mean: {ret}  ({s['reason']})")
     with open(os.path.join(logdir, "training_status.json"), "w") as f:
@@ -386,13 +400,22 @@ def train(args, config, algo="PPO", net="mlp64x64"):
         print(f"no trial converged, {name}.png not written; see {logdir}/training_status.json")
         return results, status
 
-    # training curve of the best converged trial, e.g. PPO_Sto1.png in this directory (a copy stays in the log directory)
-    best = max(converged, key=lambda s: s["episode_return_mean"])
-    print("best lr:", best["lr"], "checkpoint:", best["checkpoint"])
-    out = plot_run(logdir, label=label, out=os.path.join(HERE, f"{name}.png"), lr=best["lr"],
-                   env=env_short_name(args.env))
+    # training curve, e.g. PPO_Sto1.png in this directory (a copy stays in the log directory):
+    # one seed: the best converged trial; several seeds: mean +- std of all the seeds of the best learning rate
+    out = os.path.join(HERE, f"{name}.png")
+    seed_curve = None
+    if len({s["seed"] for s in status}) > 1:
+        def mean_return(lr):
+            return np.mean([s["episode_return_mean"] for s in converged if s["lr"] == lr])
+        best_lr = max({s["lr"] for s in converged}, key=mean_return)
+        out, seed_curve = plot_seeds(logdir, label=label, out=out, lr=best_lr, env=env_short_name(args.env))
+        best = max((s for s in converged if s["lr"] == best_lr), key=lambda s: s["episode_return_mean"])
+    else:
+        best = max(converged, key=lambda s: s["episode_return_mean"])
+        out = plot_run(logdir, label=label, out=out, lr=best["lr"], env=env_short_name(args.env))
+    print("best lr:", best["lr"], "seed:", best["seed"], "checkpoint:", best["checkpoint"])
     shutil.copy(out, logdir)
-    save_csv(args, logdir, best, algo, net)
+    save_csv(args, logdir, best, algo, net, seed_curve=seed_curve)
     return results, status
 
 if __name__ == '__main__':
