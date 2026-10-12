@@ -31,7 +31,7 @@ cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")}"
 
 module load conda
 eval "$(conda shell.bash hook)"
-conda activate "${CONDA_ENV:-rllib}"   # conda environment, see requirements.txt; other name: CONDA_ENV=xxx sbatch ...
+conda activate "${CONDA_ENV:-MASC}"   # conda environment, see requirements.txt; other name: CONDA_ENV=xxx sbatch ...
 
 export PYTHONUNBUFFERED=1             # print the training progress to the .out file immediately
 

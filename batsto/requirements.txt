@@ -1,9 +1,9 @@
 # Python 3.10. Iridis 6: create the environment on the LOGIN node (compute nodes have no internet):
 #   module load conda && eval "$(conda shell.bash hook)"
-#   conda create -n rllib python=3.10 -y && conda activate rllib
+#   conda create -n MASC python=3.10 -y && conda activate MASC
 #   pip install -r requirements.txt
 #   python -c "import ray, torch, gymnasium, tensorboard; print('ray', ray.__version__, 'torch', torch.__version__)"
-# The job scripts activate the conda environment "rllib" (other name: CONDA_ENV=xxx sbatch job_xxx.sh).
+# The job scripts activate the conda environment "MASC" (other name: CONDA_ENV=xxx sbatch job_xxx.sh).
 #
 # torch: CPU build on Linux (the jobs run on the CPU partition "batch"; the default Linux wheel would also
 # download ~3 GB of CUDA libraries into the home quota). For GPU jobs (--num-gpus 1) install the CUDA build
