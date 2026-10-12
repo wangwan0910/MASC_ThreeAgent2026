@@ -193,9 +193,9 @@ def run_phases(lr, models_dir, phases, timesteps_per_phase=TIMESTEPS_PER_PHASE, 
     return test_rewards, verdict
 
 
-def main(argv=None):
-    """masc-continual: exit code 1 if the task was stopped for every learning rate."""
-    parser = argparse.ArgumentParser()
+def build_parser(prog=None):
+    """Command line of masc-continual (also used by the web interface, masc.ui, to build its form)."""
+    parser = argparse.ArgumentParser(prog=prog)
     parser.add_argument("--task", required=True, choices=sorted(TASKS), help="order of the environments")
     parser.add_argument("--rounds", type=int, default=None,
                         help="the order of the task is repeated this many times (default: 3, 5 for bat10-sto1 / "
@@ -214,7 +214,12 @@ def main(argv=None):
                         help="no learning: the first phase must improve by this fraction")
     parser.add_argument("--no-learning-steps", type=int, default=400000,
                         help="no learning: checked after this many steps of the first phase (at most the phase length)")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv=None):
+    """masc-continual: exit code 1 if the task was stopped for every learning rate."""
+    args = build_parser().parse_args(argv)
     if args.rounds is None:
         args.rounds = ROUNDS[args.task]
 

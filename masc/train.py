@@ -57,8 +57,9 @@ from .plotting import plot_run, plot_seeds, select_trial, smooth
 PLOTTED = ("converged", "completed")   # verdicts of the trials whose figure / CSV are written
 
 
-def parse_args(default_name="PPO", default_dir="tu", argv=None):
-    parser = argparse.ArgumentParser()
+def build_parser(default_name="PPO", default_dir="tu", prog=None):
+    """Command line of masc-train / masc-train-rppo (also used by the web interface, masc.ui, to build its form)."""
+    parser = argparse.ArgumentParser(prog=prog)
     parser.add_argument("--env", required=True,
                         help="environment id (" + ", ".join(f"{k} = {v}" for k, v in ENV_SHORT_NAMES.items())
                              + ") or 'module:Class'")
@@ -121,7 +122,11 @@ def parse_args(default_name="PPO", default_dir="tu", argv=None):
     parser.add_argument("--num-gpus", type=float, default=0, help="GPUs for the learner, e.g. 1 on the cluster")
     parser.add_argument("--name", default=default_name)
     parser.add_argument("--dir", default=default_dir, help="results go to <dir>_logs/<env>/<time>/")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def parse_args(default_name="PPO", default_dir="tu", argv=None):
+    args = build_parser(default_name, default_dir).parse_args(argv)
     if args.csv_dir is None:
         args.csv_dir = os.path.join(args.out_dir, "csv_results")
     return args

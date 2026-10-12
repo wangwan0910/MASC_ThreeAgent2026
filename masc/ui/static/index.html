@@ -1,0 +1,764 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MASC 控制台</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #5d6677; --border: #d9dde5; --accent: #2f6fdb;
+  --accent-text: #ffffff; --danger: #c62828; --ok: #2e7d32; --warn: #b26a00; --code: #f0f2f5; --hover: #eef2fb;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c; --panel: #1d2128; --text: #e3e6eb; --muted: #9aa3b2; --border: #343a45; --accent: #5b93f0;
+    --accent-text: #0e1116; --danger: #ef6b6b; --ok: #66bb6a; --warn: #ffb74d; --code: #252a33; --hover: #262c37;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; padding: 12px 20px;
+  background: var(--panel); border-bottom: 1px solid var(--border); }
+header h1 { font-size: 18px; margin: 0; }
+header .info { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+nav { display: flex; gap: 4px; padding: 0 20px; background: var(--panel); border-bottom: 1px solid var(--border);
+  overflow-x: auto; }
+nav button { border: 0; background: none; color: var(--muted); padding: 10px 14px; cursor: pointer; font: inherit;
+  border-bottom: 2px solid transparent; white-space: nowrap; }
+nav button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+main { padding: 16px 20px 40px; max-width: 1400px; margin: 0 auto; }
+.tab { display: none; }
+.tab.active { display: block; }
+.grid { display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: 16px; align-items: start; }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } main { padding: 12px; } }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px;
+  margin-bottom: 16px; min-width: 0; }
+.card h2 { font-size: 15px; margin: 0 0 10px; }
+.card h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); }
+label { display: block; }
+.check { display: flex; align-items: center; gap: 8px; padding: 3px 0; cursor: pointer; }
+.swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; flex: none; }
+.fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px 14px; }
+.field label { font-size: 12px; color: var(--muted); }
+.field code { color: var(--text); font-size: 12px; }
+.field .help { font-size: 11px; color: var(--muted); margin-top: 2px; }
+input[type=text], input[type=number], select, textarea { width: 100%; padding: 6px 8px; font: inherit;
+  color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 5px; }
+input.changed, select.changed { border-color: var(--accent); }
+textarea, pre { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+pre { background: var(--code); padding: 10px; border-radius: 6px; overflow: auto; max-height: 460px; margin: 0;
+  white-space: pre-wrap; overflow-wrap: anywhere; }
+button.btn { border: 1px solid var(--border); background: var(--panel); color: var(--text); padding: 6px 12px;
+  border-radius: 5px; cursor: pointer; font: inherit; }
+button.btn:hover { background: var(--hover); }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+button.danger { color: var(--danger); }
+button:disabled { opacity: .5; cursor: default; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.msg { margin-top: 8px; font-size: 13px; overflow-wrap: anywhere; }
+.msg.error { color: var(--danger); } .msg.ok { color: var(--ok); } .msg.warn { color: var(--warn); }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+tr.click { cursor: pointer; } tr.click:hover, tr.selected { background: var(--hover); }
+.table-wrap { overflow-x: auto; }
+.state { font-weight: 600; }
+.state.RUNNING, .state.运行中, .state.converged, .state.completed, .state.COMPLETED { color: var(--ok); }
+.state.FAILED, .state.collapsed, .state.diverged, .state.CANCELLED, .state.已取消 { color: var(--danger); }
+.state.PENDING, .state.stalled, .state.no_learning, .state.未完成 { color: var(--warn); }
+canvas { width: 100%; display: block; }
+.chart { position: relative; }
+.figs { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.figs img { width: 100%; border: 1px solid var(--border); border-radius: 6px; background: #fff; cursor: zoom-in; }
+.figs .cap { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.kpi { display: flex; flex-wrap: wrap; gap: 18px; margin: 4px 0 10px; }
+.kpi div { min-width: 120px; } .kpi b { display: block; font-size: 20px; }
+.kpi span { color: var(--muted); font-size: 12px; }
+.small { font-size: 12px; color: var(--muted); }
+.radio { display: inline-flex; gap: 6px; align-items: center; margin-right: 14px; cursor: pointer; }
+dialog { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text);
+  max-width: 95vw; max-height: 95vh; padding: 8px; }
+dialog img { max-width: 90vw; max-height: 85vh; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MASC 控制台</h1>
+  <span class="info" id="info">连接中…</span>
+</header>
+<nav id="nav">
+  <button data-tab="train" class="active">训练</button>
+  <button data-tab="continual">连续学习</button>
+  <button data-tab="jobs">作业</button>
+  <button data-tab="results">结果</button>
+  <button data-tab="explore">环境探索</button>
+</nav>
+<main>
+  <div class="msg error" id="global-error"></div>
+
+  <!-- ===================== training ===================== -->
+  <section class="tab active" id="tab-train">
+    <div class="grid">
+      <div>
+        <div class="card">
+          <h2>环境</h2>
+          <div id="train-items"></div>
+          <div class="row" style="margin-top:6px">
+            <button class="btn" data-select="train-items" data-value="all">全选</button>
+            <button class="btn" data-select="train-items" data-value="Bat">只选 Bat</button>
+            <button class="btn" data-select="train-items" data-value="Sto">只选 Sto</button>
+          </div>
+          <h3>算法</h3>
+          <label class="radio"><input type="radio" name="algo" value="train" checked> PPO（MLP）</label>
+          <label class="radio"><input type="radio" name="algo" value="train_rppo"> RPPO（LSTM）</label>
+        </div>
+        <div class="card">
+          <h2>预设</h2>
+          <div class="row">
+            <button class="btn" id="preset-paper">论文设置</button>
+            <button class="btn" id="preset-quick">快速测试</button>
+            <button class="btn" id="preset-default">命令默认值</button>
+          </div>
+          <p class="small">论文设置：团队奖励、不因缺货终止、lr 1e-4、5 个种子、固定 2M 步。快速测试：2 个种子、5 万步、30 分钟。</p>
+        </div>
+        <div class="card" id="train-target"></div>
+      </div>
+      <div>
+        <div class="card"><h2>参数</h2><div id="train-form"></div></div>
+        <div class="card">
+          <h2>命令预览</h2>
+          <pre id="train-preview">…</pre>
+          <div class="row" style="margin-top:10px">
+            <button class="btn primary" id="train-submit">提交</button>
+          </div>
+          <div class="msg" id="train-msg"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== continual ===================== -->
+  <section class="tab" id="tab-continual">
+    <div class="grid">
+      <div>
+        <div class="card">
+          <h2>连续学习任务</h2>
+          <div id="continual-items"></div>
+          <p class="small">每个任务按顺序在环境之间训练，每个阶段从上一阶段的策略继续，整个顺序重复若干轮。</p>
+        </div>
+        <div class="card" id="continual-target"></div>
+      </div>
+      <div>
+        <div class="card"><h2>参数</h2><div id="continual-form"></div></div>
+        <div class="card">
+          <h2>命令预览</h2>
+          <pre id="continual-preview">…</pre>
+          <div class="row" style="margin-top:10px">
+            <button class="btn primary" id="continual-submit">提交</button>
+          </div>
+          <div class="msg" id="continual-msg"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== jobs ===================== -->
+  <section class="tab" id="tab-jobs">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h2 style="margin:0">运行中 / 排队中的 SLURM 作业</h2>
+        <div class="row">
+          <label class="check"><input type="checkbox" id="jobs-auto" checked> 每 20 秒刷新</label>
+          <button class="btn" id="jobs-refresh">刷新</button>
+        </div>
+      </div>
+      <div class="table-wrap"><table id="jobs-queue"></table></div>
+      <h3>最近两天结束的作业</h3>
+      <div class="table-wrap"><table id="jobs-done"></table></div>
+      <h3>本地运行</h3>
+      <div class="table-wrap"><table id="jobs-local"></table></div>
+    </div>
+    <div class="card">
+      <h2>日志 <span class="small" id="log-path"></span></h2>
+      <div class="row" id="log-files" style="margin-bottom:8px"></div>
+      <pre id="log-text">点击作业的“日志”查看输出</pre>
+    </div>
+  </section>
+
+  <!-- ===================== results ===================== -->
+  <section class="tab" id="tab-results">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h2 style="margin:0">运行记录 <span class="small" id="runs-root"></span></h2>
+        <div class="row">
+          <select id="runs-filter" style="width:auto">
+            <option value="">全部</option><option value="training">单环境训练</option>
+            <option value="continual">连续学习</option>
+          </select>
+          <button class="btn" id="runs-refresh">刷新</button>
+        </div>
+      </div>
+      <div class="table-wrap" style="max-height:340px;overflow-y:auto"><table id="runs-table"></table></div>
+    </div>
+    <div class="card" id="run-detail" style="display:none">
+      <h2 id="run-title"></h2>
+      <div class="kpi" id="run-kpi"></div>
+      <div class="chart"><canvas id="run-chart" height="420"></canvas></div>
+      <div class="row" style="margin-top:6px">
+        <label class="check"><input type="checkbox" id="run-show-seeds" checked> 显示单个种子</label>
+        <label class="check"><input type="checkbox" id="run-auto"> 每 30 秒刷新（运行中的训练）</label>
+      </div>
+      <h3>trial 状态</h3>
+      <div class="table-wrap"><table id="run-trials"></table></div>
+      <h3>重新制图（masc-plot）</h3>
+      <div class="fields" id="plot-form">
+        <div class="field"><label>图例</label><input type="text" id="plot-label"></div>
+        <div class="field"><label>学习率（空：最好的）</label><input type="text" id="plot-lr"></div>
+        <div class="field"><label>平滑（0–0.99）</label><input type="text" id="plot-smoothing" value="0"></div>
+        <div class="field"><label>横轴范围</label><input type="text" id="plot-xlim"></div>
+        <div class="field"><label>纵轴范围</label><input type="text" id="plot-ylim"></div>
+        <div class="field"><label>文件名</label><input type="text" id="plot-out"></div>
+        <div class="field"><label class="check"><input type="checkbox" id="plot-seeds" checked> 多种子：均值 ± std</label></div>
+      </div>
+      <div class="row" style="margin-top:10px"><button class="btn primary" id="plot-run">生成图</button></div>
+      <div class="msg" id="plot-msg"></div>
+      <h3>图</h3>
+      <div class="figs" id="run-figs"></div>
+    </div>
+  </section>
+
+  <!-- ===================== environment explorer ===================== -->
+  <section class="tab" id="tab-explore">
+    <div class="grid">
+      <div class="card">
+        <h2>固定策略</h2>
+        <div class="field"><label>环境</label><select id="ex-env"></select></div>
+        <div class="field" style="margin-top:8px"><label>工厂订货量（0–19）</label><input type="number" id="ex-f" min="0" max="19" value="18"></div>
+        <div class="field" style="margin-top:8px"><label>仓库订货量（0–19）</label><input type="number" id="ex-w" min="0" max="19" value="18"></div>
+        <div class="field" style="margin-top:8px"><label>零售商订货量（0–19）</label><input type="number" id="ex-r" min="0" max="19" value="18"></div>
+        <div class="field" style="margin-top:8px"><label>零售商再订货点（0–9）</label><input type="number" id="ex-rp" min="0" max="9" value="6"></div>
+        <div class="field" style="margin-top:8px"><label>测试种子数</label><input type="number" id="ex-seeds" min="1" max="200" value="50"></div>
+        <label class="check" style="margin-top:8px"><input type="checkbox" id="ex-noterm" checked> 不因缺货终止（跑满 100 天）</label>
+        <div class="row" style="margin-top:10px">
+          <button class="btn primary" id="ex-run">模拟</button>
+          <button class="btn" id="ex-best">搜索最优固定策略</button>
+        </div>
+        <div class="msg" id="ex-msg"></div>
+      </div>
+      <div>
+        <div class="card">
+          <h2>结果</h2>
+          <div class="kpi" id="ex-kpi"><div><span>选择策略后点击“模拟”</span></div></div>
+          <h3>第一个 episode：各级库存</h3>
+          <div class="chart"><canvas id="ex-inv" height="260"></canvas></div>
+          <h3>第一个 episode：每天的成本</h3>
+          <div class="chart"><canvas id="ex-cost" height="220"></canvas></div>
+        </div>
+        <div class="card" id="ex-best-card" style="display:none">
+          <h2>最优固定策略（网格搜索，5 个种子）</h2>
+          <div class="table-wrap"><table id="ex-best-table"></table></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<dialog id="zoom"><img id="zoom-img" alt=""><div class="row" style="justify-content:flex-end"><button class="btn" onclick="this.closest('dialog').close()">关闭</button></div></dialog>
+
+<script>
+"use strict";
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+let META = null;
+const AGENT_COLORS = { factory: "#7a5195", warehouse: "#ef5675", retailer: "#2f6fdb" };
+
+// ---------------------------------------------------------------- helpers
+function $(id) { return document.getElementById(id); }
+function el(tag, attrs = {}, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v;
+    else if (k === "text") e.textContent = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (v !== undefined && v !== null && v !== false) e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of children) if (c !== null && c !== undefined) e.append(c instanceof Node ? c : document.createTextNode(c));
+  return e;
+}
+async function api(path, body) {
+  const opts = { headers: { "X-Token": TOKEN } };
+  if (body !== undefined) { opts.method = "POST"; opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+  const r = await fetch("/api/" + path, opts);
+  const data = await r.json().catch(() => ({ error: "服务器返回了无法解析的结果" }));
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+function fileUrl(path) { return `/api/file?path=${encodeURIComponent(path)}&token=${encodeURIComponent(TOKEN)}`; }
+function setMsg(id, text, kind) { const m = $(id); m.textContent = text || ""; m.className = "msg " + (kind || ""); }
+function fmt(v) {
+  if (v === null || v === undefined || v === "") return "";
+  if (typeof v !== "number") return String(v);
+  if (Math.abs(v) >= 1e4) return v.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  return Number(v.toPrecision(4)).toString();
+}
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+// ---------------------------------------------------------------- chart
+function niceStep(range, n) {
+  const raw = range / n, p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p;
+  return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * p;
+}
+function axisScale(lo, hi) {   // matplotlib-like scientific notation: ×10^e above the axis
+  const m = Math.max(Math.abs(lo), Math.abs(hi));
+  const e = m >= 1e4 || (m > 0 && m < 1e-2) ? Math.floor(Math.log10(m)) : 0;
+  return e;
+}
+function drawChart(canvas, opts) {
+  const series = opts.series || [], bands = opts.bands || [], bars = opts.bars || [];
+  const dpr = window.devicePixelRatio || 1, cssW = canvas.clientWidth || 600, cssH = +canvas.getAttribute("height");
+  canvas.width = cssW * dpr; canvas.height = cssH * dpr; canvas.style.height = cssH + "px";
+  const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, cssW, cssH);
+  const text = cssVar("--text"), muted = cssVar("--muted"), border = cssVar("--border");
+  const all = [...series, ...bands, ...bars];
+  if (!all.length) { ctx.fillStyle = muted; ctx.font = "13px sans-serif"; ctx.fillText("没有数据", 20, 30); return; }
+  let xs = [], ys = [];
+  for (const s of all) { xs = xs.concat(s.x); ys = ys.concat(s.y, s.lo || [], s.hi || []); }
+  let [x0, x1] = opts.xlim || [Math.min(...xs), Math.max(...xs)];
+  let [y0, y1] = opts.ylim || [Math.min(...ys), Math.max(...ys)];
+  if (bars.length) y0 = Math.min(y0, 0);
+  if (x1 === x0) x1 = x0 + 1; if (y1 === y0) { y1 += 1; y0 -= 1; }
+  const pad = (y1 - y0) * 0.05; if (!opts.ylim) { y0 -= pad; y1 += pad; }
+  const L = 64, R = 14, T = 26, B = 42, W = cssW - L - R, H = cssH - T - B;
+  const X = v => L + (v - x0) / (x1 - x0) * W, Y = v => T + (1 - (v - y0) / (y1 - y0)) * H;
+  const ex = axisScale(x0, x1), ey = axisScale(y0, y1);
+  ctx.font = "11px sans-serif"; ctx.strokeStyle = border; ctx.fillStyle = muted; ctx.lineWidth = 1;
+  const xs_ = niceStep(x1 - x0, 6), ys_ = niceStep(y1 - y0, 6);
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  for (let v = Math.ceil(x0 / xs_) * xs_; v <= x1 + 1e-9 * Math.abs(x1); v += xs_) {
+    ctx.beginPath(); ctx.moveTo(X(v), T + H); ctx.lineTo(X(v), T + H + 4); ctx.stroke();
+    ctx.fillText(+(v / 10 ** ex).toPrecision(4), X(v), T + H + 6);
+  }
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  for (let v = Math.ceil(y0 / ys_) * ys_; v <= y1 + 1e-9 * Math.abs(y1); v += ys_) {
+    ctx.globalAlpha = .35; ctx.beginPath(); ctx.moveTo(L, Y(v)); ctx.lineTo(L + W, Y(v)); ctx.stroke(); ctx.globalAlpha = 1;
+    ctx.fillText(+(v / 10 ** ey).toPrecision(4), L - 6, Y(v));
+  }
+  ctx.strokeStyle = muted; ctx.strokeRect(L, T, W, H);
+  ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+  if (ey) ctx.fillText("×10^" + ey, L, T - 4);
+  ctx.textAlign = "right"; ctx.textBaseline = "top";
+  if (ex) ctx.fillText("×10^" + ex, L + W, T + H + 22);
+  ctx.textAlign = "center"; ctx.fillStyle = text; ctx.fillText(opts.xlabel || "", L + W / 2, T + H + 22);
+  ctx.save(); ctx.translate(14, T + H / 2); ctx.rotate(-Math.PI / 2); ctx.textBaseline = "top";
+  ctx.fillText(opts.ylabel || "", 0, -4); ctx.restore();
+  ctx.save(); ctx.beginPath(); ctx.rect(L, T, W, H); ctx.clip();
+  for (const b of bars) {
+    ctx.fillStyle = b.color; const w = Math.max(1, W / b.x.length * 0.8);
+    b.x.forEach((xv, i) => { const yv = b.y[i]; if (yv) ctx.fillRect(X(xv) - w / 2, Math.min(Y(yv), Y(0)), w, Math.abs(Y(yv) - Y(0))); });
+  }
+  for (const b of bands) {
+    ctx.globalAlpha = .25; ctx.fillStyle = b.color; ctx.beginPath();
+    b.x.forEach((xv, i) => i ? ctx.lineTo(X(xv), Y(b.hi[i])) : ctx.moveTo(X(xv), Y(b.hi[i])));
+    for (let i = b.x.length - 1; i >= 0; i--) ctx.lineTo(X(b.x[i]), Y(b.lo[i]));
+    ctx.closePath(); ctx.fill(); ctx.globalAlpha = 1;
+  }
+  for (const s of [...series, ...bands]) {
+    ctx.strokeStyle = s.color; ctx.lineWidth = s.width || 1.2; ctx.globalAlpha = s.alpha || 1; ctx.beginPath();
+    s.x.forEach((xv, i) => i ? ctx.lineTo(X(xv), Y(s.y[i])) : ctx.moveTo(X(xv), Y(s.y[i]))); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+  const legend = all.filter(s => s.name && !s.nolegend);
+  if (legend.length) {     // lower right, as the training figures
+    ctx.font = "11px sans-serif"; const lw = Math.max(...legend.map(s => ctx.measureText(s.name).width)) + 34;
+    const lh = 16, lx = L + W - lw - 8, ly = T + H - legend.length * lh - 10;
+    ctx.fillStyle = cssVar("--panel"); ctx.globalAlpha = .85; ctx.fillRect(lx, ly, lw, legend.length * lh + 6); ctx.globalAlpha = 1;
+    ctx.strokeStyle = border; ctx.strokeRect(lx, ly, lw, legend.length * lh + 6);
+    legend.forEach((s, i) => {
+      ctx.fillStyle = s.color; ctx.fillRect(lx + 6, ly + 8 + i * lh, 16, 3);
+      ctx.fillStyle = text; ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.fillText(s.name, lx + 28, ly + 10 + i * lh);
+    });
+  }
+}
+
+// ---------------------------------------------------------------- forms
+const FORMS = {};   // kind -> {values, fields}
+function buildForm(kind, container) {
+  const schema = META.schemas[kind];
+  const values = {};
+  const groups = {};
+  for (const f of schema) (groups[f.group] = groups[f.group] || []).push(f);
+  const order = ["环境与奖励", "训练", "PPO", "收敛判据", "输出", "其他"];
+  container.innerHTML = "";
+  const inputs = {};
+  for (const g of order.filter(g => groups[g]).concat(Object.keys(groups).filter(g => !order.includes(g)))) {
+    container.append(el("h3", { text: g }));
+    const box = el("div", { class: "fields" });
+    for (const f of groups[g]) {
+      let input;
+      if (f.kind === "flag") {
+        input = el("input", { type: "checkbox" });
+        input.addEventListener("change", () => { values[f.option] = input.checked; changed(kind); });
+        box.append(el("div", { class: "field" }, el("label", { class: "check", title: f.help }, input, el("code", { text: f.option })),
+          el("div", { class: "help", text: f.help })));
+      } else {
+        if (f.choices) {
+          input = el("select");
+          for (const c of f.choices) input.append(el("option", { value: c, text: c }));
+        } else {
+          input = el("input", { type: "text", placeholder: f.default === null ? "" : String(f.default) });
+        }
+        input.value = f.default === null || f.default === undefined ? "" : String(f.default);
+        input.addEventListener("input", () => { values[f.option] = input.value; changed(kind); });
+        box.append(el("div", { class: "field" }, el("label", { title: f.help }, el("code", { text: f.option }),
+          f.multiple ? " （可填多个，空格分隔）" : ""), input, el("div", { class: "help", text: f.help })));
+      }
+      inputs[f.option] = { input, field: f };
+    }
+    container.append(box);
+  }
+  FORMS[kind] = { values, inputs };
+}
+function setValues(kind, preset) {
+  const form = FORMS[kind];
+  for (const [opt, { input, field }] of Object.entries(form.inputs)) {
+    const v = opt in preset ? preset[opt] : (field.kind === "flag" ? false : (field.default ?? ""));
+    if (field.kind === "flag") input.checked = !!v; else input.value = String(v);
+    form.values[opt] = field.kind === "flag" ? input.checked : input.value;
+  }
+  changed(kind);
+}
+function markChanged(kind) {
+  for (const { input, field } of Object.values(FORMS[kind].inputs)) {
+    if (field.kind === "flag") continue;
+    input.classList.toggle("changed", String(input.value) !== String(field.default ?? ""));
+  }
+}
+
+// target (SLURM / local) card
+function buildTarget(kind, container) {
+  container.innerHTML = "";
+  const slurmOk = META.has_slurm;
+  container.append(el("h2", { text: "运行方式" }));
+  const r1 = el("input", { type: "radio", name: kind + "-target", value: "slurm", checked: slurmOk, disabled: !slurmOk });
+  const r2 = el("input", { type: "radio", name: kind + "-target", value: "local", checked: !slurmOk });
+  container.append(el("label", { class: "radio" }, r1, "提交 SLURM 作业"), el("label", { class: "radio" }, r2, "本地运行"));
+  const warn = el("div", { class: "msg warn" });
+  const slurmBox = el("div", { class: "fields", style: "margin-top:10px" });
+  const fields = [["job_name", "作业名", `masc_${kind}`], ["partition", "分区", "batch"], ["cpus", "CPU 数", "16"],
+    ["mem", "内存", "20G"], ["time", "时限", "26:00:00"], ["mail", "邮件（可空）", ""]];
+  const inputs = {};
+  for (const [k, label, def] of fields) {
+    const i = el("input", { type: "text", value: def }); i.addEventListener("input", () => changed(kind)); inputs[k] = i;
+    slurmBox.append(el("div", { class: "field" }, el("label", { text: label }), i));
+  }
+  container.append(slurmBox, warn,
+    el("p", { class: "small", text: "SLURM：每个环境 / 任务一个数组任务，脚本保存在结果目录的 ui_jobs/ 下。本地：在这台机器上依次运行，日志在 ui_local/。" }));
+  const update = () => {
+    const local = r2.checked; slurmBox.style.display = local ? "none" : "";
+    warn.textContent = local && META.login_node ? "这是登录节点：不要在登录节点上训练，请提交 SLURM 作业。" :
+      (!slurmOk ? "没有找到 SLURM（sbatch），只能本地运行。" : "");
+    changed(kind);
+  };
+  r1.addEventListener("change", update); r2.addEventListener("change", update); update();
+  container._get = () => ({ target: r2.checked ? "local" : "slurm",
+    slurm: Object.fromEntries(Object.entries(inputs).map(([k, i]) => [k, i.value.trim()])) });
+  container._set = (k, v) => { inputs[k].value = v; };
+}
+
+// items (environments / tasks)
+function buildItems(container, items) {
+  container.innerHTML = "";
+  for (const it of items) {
+    const cb = el("input", { type: "checkbox", value: it.id, checked: it.checked });
+    cb.addEventListener("change", () => container.dispatchEvent(new Event("itemschange")));
+    container.append(el("label", { class: "check" }, cb, it.color ? el("span", { class: "swatch", style: `background:${it.color}` }) : null,
+      el("span", { text: it.label }), el("span", { class: "small", text: it.note || "" })));
+  }
+}
+function selectedItems(container) { return [...container.querySelectorAll("input:checked")].map(i => i.value); }
+
+const previewKinds = { train: "train", continual: "continual" };
+function currentKind(tab) { return tab === "train" ? document.querySelector("input[name=algo]:checked").value : "continual"; }
+function request(tab) {
+  const kind = currentKind(tab), formKind = tab === "train" ? "train" : "continual";
+  const t = $(tab + "-target")._get();
+  // only the values changed in the form: the command compares them with its own defaults (RPPO: --dir tu1)
+  const values = {};
+  for (const [opt, { field }] of Object.entries(FORMS[formKind].inputs)) {
+    const v = FORMS[formKind].values[opt];
+    if (field.kind === "flag" ? v === true : String(v ?? "") !== String(field.default ?? "")) values[opt] = v;
+  }
+  return { kind, items: selectedItems($(tab + "-items")), values, target: t.target,
+    slurm: { ...t.slurm, cpus: t.slurm.cpus, job_name: t.slurm.job_name || `masc_${kind}` } };
+}
+const refreshPreview = {};
+function changed(kind) {
+  const tab = kind === "continual" ? "continual" : "train";
+  markChanged(tab === "train" ? "train" : "continual");
+  if (refreshPreview[tab]) refreshPreview[tab]();
+}
+function setupCommandTab(tab) {
+  refreshPreview[tab] = debounce(async () => {
+    if (!$(tab + "-target")._get) return;
+    const req = request(tab);
+    try {
+      const p = await api("preview", req);
+      $(tab + "-preview").textContent = req.target === "local" ? p.commands.join("\n\n") : p.script;
+      setMsg(tab + "-msg", ""); $(tab + "-submit").disabled = false;
+    } catch (e) { $(tab + "-preview").textContent = ""; setMsg(tab + "-msg", e.message, "error"); $(tab + "-submit").disabled = true; }
+  }, 250);
+  $(tab + "-items").addEventListener("itemschange", () => refreshPreview[tab]());
+  $(tab + "-submit").addEventListener("click", async () => {
+    const req = request(tab);
+    const what = req.target === "local" ? "在本机运行" : "提交 SLURM 作业";
+    if (!confirm(`${what}：${req.items.length} 个${tab === "train" ? "环境" : "任务"}（${req.items.join(", ")}）？`)) return;
+    $(tab + "-submit").disabled = true;
+    try { const r = await api("submit", req); setMsg(tab + "-msg", r.message + (r.script ? `（脚本 ${r.script}）` : ""), "ok"); }
+    catch (e) { setMsg(tab + "-msg", e.message, "error"); }
+    finally { $(tab + "-submit").disabled = false; }
+  });
+}
+
+const PRESETS = {
+  paper: { "--no-stockout-termination": true, "--lr": "0.0001", "--seeds": "0 1 2 3 4", "--no-early-stop": true,
+    "--total-timesteps": "2000000", "--num-env-runners": "2", "--dir": "tu_seeds" },
+  quick: { "--no-stockout-termination": true, "--lr": "0.0003", "--seeds": "0 1", "--no-early-stop": true,
+    "--total-timesteps": "50000", "--num-env-runners": "2", "--dir": "tu_test", "--tag": "test" },
+};
+
+// ---------------------------------------------------------------- jobs
+let logFile = null;
+async function loadJobs() {
+  try {
+    const j = await api("jobs");
+    const q = $("jobs-queue"); q.innerHTML = "";
+    q.append(el("tr", {}, ...["作业号", "名称", "状态", "已运行", "时限", "节点 / 原因", "目录", ""].map(t => el("th", { text: t }))));
+    if (!j.has_slurm) q.append(el("tr", {}, el("td", { colspan: 8, text: "这台机器上没有 SLURM" })));
+    else if (!j.squeue.length) q.append(el("tr", {}, el("td", { colspan: 8, text: "没有运行中或排队的作业" })));
+    for (const r of j.squeue) q.append(el("tr", {}, el("td", { text: r.id }), el("td", { text: r.name }),
+      el("td", { class: "state " + r.state, text: r.state }), el("td", { text: r.time }), el("td", { text: r.limit }),
+      el("td", { text: r.reason }), el("td", { class: "small", text: r.workdir }),
+      el("td", {}, el("button", { class: "btn", text: "日志", onclick: () => showJobLogs(r.id) }), " ",
+        el("button", { class: "btn danger", text: "取消", onclick: () => cancelJob(r.id, false) }))));
+    const d = $("jobs-done"); d.innerHTML = "";
+    d.append(el("tr", {}, ...["作业号", "名称", "状态", "用时", "结束", "目录", ""].map(t => el("th", { text: t }))));
+    for (const r of j.sacct.slice(0, 60)) d.append(el("tr", {}, el("td", { text: r.id }), el("td", { text: r.name }),
+      el("td", { class: "state " + r.state.split(" ")[0], text: r.state }), el("td", { text: r.elapsed }), el("td", { text: r.end }),
+      el("td", { class: "small", text: r.workdir }), el("td", {}, el("button", { class: "btn", text: "日志", onclick: () => showJobLogs(r.id) }))));
+    const l = $("jobs-local"); l.innerHTML = "";
+    l.append(el("tr", {}, ...["编号", "命令", "环境 / 任务", "状态", ""].map(t => el("th", { text: t }))));
+    if (!j.local.length) l.append(el("tr", {}, el("td", { colspan: 5, text: "没有本地运行" })));
+    for (const r of j.local) l.append(el("tr", {}, el("td", { text: r.id }), el("td", { text: r.kind }),
+      el("td", { text: r.items.join(", ") }), el("td", { class: "state " + r.status, text: r.status }),
+      el("td", {}, el("button", { class: "btn", text: "日志", onclick: () => showLog(r.log) }), " ",
+        r.status === "运行中" ? el("button", { class: "btn danger", text: "取消", onclick: () => cancelJob(r.id, true) }) : null)));
+    if (logFile) showLog(logFile, true);
+  } catch (e) { setMsg("global-error", e.message, "error"); }
+}
+async function showJobLogs(id) {
+  try {
+    const r = await api("job_logs?id=" + encodeURIComponent(id));
+    const box = $("log-files"); box.innerHTML = "";
+    if (!r.files.length) { $("log-text").textContent = "没有找到这个作业的输出文件"; return; }
+    for (const f of r.files) box.append(el("button", { class: "btn", text: f.split("/").pop(), onclick: () => showLog(f) }));
+    showLog(r.files[0]);
+  } catch (e) { $("log-text").textContent = e.message; }
+}
+async function showLog(path, quiet) {
+  try {
+    const r = await api("log?path=" + encodeURIComponent(path) + "&lines=300");
+    logFile = path; $("log-path").textContent = r.path;
+    const pre = $("log-text"), atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+    pre.textContent = r.text || "（空）"; if (!quiet || atEnd) pre.scrollTop = pre.scrollHeight;
+  } catch (e) { if (!quiet) $("log-text").textContent = e.message; }
+}
+async function cancelJob(id, local) {
+  if (!confirm(`取消${local ? "本地运行" : "作业"} ${id}？`)) return;
+  try { const r = await api("cancel", { id, local }); setMsg("global-error", r.message, "ok"); loadJobs(); }
+  catch (e) { setMsg("global-error", e.message, "error"); }
+}
+
+// ---------------------------------------------------------------- results
+let RUNS = [], currentRun = null, currentCurves = null;
+async function loadRuns() {
+  try {
+    const r = await api("runs"); RUNS = r.runs; renderRuns();
+  } catch (e) { setMsg("global-error", e.message, "error"); }
+}
+function renderRuns() {
+  const t = $("runs-table"), filter = $("runs-filter").value; t.innerHTML = "";
+  t.append(el("tr", {}, ...["类型", "环境 / 任务", "时间", "状态", "trial", "目录"].map(x => el("th", { text: x }))));
+  const runs = RUNS.filter(r => !filter || r.type === filter);
+  if (!runs.length) t.append(el("tr", {}, el("td", { colspan: 6, text: "结果目录下还没有运行记录" })));
+  for (const r of runs) {
+    const color = META.colors[r.env];
+    const tr = el("tr", { class: "click" + (currentRun && currentRun.path === r.path ? " selected" : "") },
+      el("td", { text: r.type === "training" ? "单环境" : "连续学习" }),
+      el("td", {}, color ? el("span", { class: "swatch", style: `background:${color};margin-right:6px` }) : null, r.env),
+      el("td", { text: r.time }), el("td", { class: "state " + r.state, text: r.state }), el("td", { text: r.n_trials }),
+      el("td", { class: "small", text: r.path }));
+    tr.addEventListener("click", () => openRun(r)); t.append(tr);
+  }
+}
+async function openRun(run) {
+  currentRun = run; renderRuns(); $("run-detail").style.display = "";
+  $("run-title").textContent = `${run.type === "training" ? "单环境训练" : "连续学习"}：${run.env}（${run.path}）`;
+  $("plot-label").value = run.type === "training" ? `PPO in ${run.env}` : "";
+  $("plot-out").value = `PPO_${run.env}_${(run.path.split("/").slice(-1)[0] || "run")}`;
+  $("plot-xlim").value = META.xlim.join(" "); $("plot-ylim").value = META.ylim.join(" ");
+  $("plot-form").style.display = run.type === "training" ? "" : "none"; $("plot-run").style.display = run.type === "training" ? "" : "none";
+  renderTrials(run); await loadCurves(); loadFigures();
+}
+function renderTrials(run) {
+  const t = $("run-trials"); t.innerHTML = "";
+  if (run.type === "continual") {
+    const s = run.status || {};
+    t.append(el("tr", {}, ...["任务", "轮数", "lr", "状态", "各阶段测试回报"].map(x => el("th", { text: x }))));
+    t.append(el("tr", {}, el("td", { text: s.task || run.env }), el("td", { text: s.rounds ?? "" }), el("td", { text: s.lr ?? "" }),
+      el("td", { class: "state " + run.state, text: run.state }),
+      el("td", { class: "small", text: Object.entries(s.test_rewards || {}).map(([k, v]) => `${k}: ${fmt(v)}`).join("，") })));
+    return;
+  }
+  t.append(el("tr", {}, ...["lr", "seed", "状态", "步数", "原因", "would_stop"].map(x => el("th", { text: x }))));
+  if (!run.status) { t.append(el("tr", {}, el("td", { colspan: 6, text: "训练还没有结束（training_status.json 尚未写出）" }))); return; }
+  for (const s of run.status) t.append(el("tr", {}, el("td", { text: s.lr }), el("td", { text: s.seed ?? "" }),
+    el("td", { class: "state " + s.status, text: s.status }), el("td", { text: fmt(s.steps) }), el("td", { class: "small", text: s.reason }),
+    el("td", { class: "small", text: Object.entries(s.would_stop || {}).map(([k, v]) => `${k} @ ${fmt(v.steps)}`).join("，") })));
+}
+async function loadCurves() {
+  if (!currentRun) return;
+  try { currentCurves = await api("curves?path=" + encodeURIComponent(currentRun.path)); drawRun(); }
+  catch (e) { setMsg("plot-msg", e.message, "error"); }
+}
+function drawRun() {
+  const c = currentCurves, run = currentRun; if (!c) return;
+  const color = META.colors[run.env] || "#2f6fdb";
+  const kpi = $("run-kpi"); kpi.innerHTML = "";
+  if (c.type === "continual") {
+    drawChart($("run-chart"), { xlabel: "Step", ylabel: c.ylabel,
+      series: c.series.map((s, i) => ({ ...s, color: META.colors[s.env] || "gray", name: c.series.findIndex(o => o.env === s.env) === i ? s.env : "" })) });
+    return;
+  }
+  const showSeeds = $("run-show-seeds").checked, multi = c.bands.length > 0;
+  const series = c.series.map(s => ({ ...s, color, alpha: multi ? 0.35 : 1, width: multi ? 0.8 : 1.2, nolegend: multi }));
+  const bands = c.bands.map(b => ({ ...b, color, width: 1.6 }));
+  drawChart($("run-chart"), { xlabel: "Step", ylabel: c.ylabel, series: multi && !showSeeds ? [] : series, bands });
+  const last = c.series.map(s => s.last).filter(v => v !== null);
+  if (last.length) {
+    const mean = last.reduce((a, b) => a + b, 0) / last.length;
+    kpi.append(el("div", {}, el("b", { text: fmt(mean) }), el("span", { text: "最后一次迭代的 team_return（trial 平均）" })),
+      el("div", {}, el("b", { text: c.series.length }), el("span", { text: "trial 数" })),
+      el("div", {}, el("b", { text: fmt(Math.max(...c.series.map(s => s.x[s.x.length - 1] || 0))) }), el("span", { text: "最大步数" })));
+  }
+}
+async function loadFigures() {
+  const box = $("run-figs"); box.innerHTML = "";
+  try {
+    const r = await api("figures?path=" + encodeURIComponent(currentRun.path));
+    if (!r.figures.length) box.append(el("div", { class: "small", text: "这个运行目录里没有图" }));
+    for (const f of r.figures) box.append(figure(f));
+  } catch (e) { box.append(el("div", { class: "msg error", text: e.message })); }
+}
+function figure(path) {
+  const img = el("img", { src: fileUrl(path) + "&t=" + Date.now(), alt: path, loading: "lazy" });
+  img.addEventListener("click", () => { $("zoom-img").src = img.src; $("zoom").showModal(); });
+  return el("div", {}, img, el("div", { class: "cap", text: path }));
+}
+async function replot() {
+  const nums = s => s.trim().split(/[\s,]+/).map(Number);
+  const body = { path: currentRun.path, label: $("plot-label").value, lr: $("plot-lr").value.trim(),
+    smoothing: $("plot-smoothing").value, xlim: nums($("plot-xlim").value), ylim: nums($("plot-ylim").value),
+    out: $("plot-out").value, seeds: $("plot-seeds").checked };
+  try {
+    const r = await api("plot", body); setMsg("plot-msg", `已生成 ${r.path}`, "ok");
+    $("run-figs").prepend(figure(r.path));
+  } catch (e) { setMsg("plot-msg", e.message, "error"); }
+}
+
+// ---------------------------------------------------------------- explorer
+async function simulate() {
+  const body = { env: $("ex-env").value, orders: { factory: +$("ex-f").value, warehouse: +$("ex-w").value, retailer: +$("ex-r").value },
+    reorder_point: +$("ex-rp").value, seeds: +$("ex-seeds").value, max_stockout_days: $("ex-noterm").checked ? 0 : 12 };
+  setMsg("ex-msg", "模拟中…");
+  try {
+    const r = await api("simulate", body); setMsg("ex-msg", "");
+    const kpi = $("ex-kpi"); kpi.innerHTML = "";
+    kpi.append(el("div", {}, el("b", { text: fmt(r.mean) }), el("span", { text: `episode 总成本（取负），${r.n} 个种子平均` })),
+      el("div", {}, el("b", { text: fmt(r.std) }), el("span", { text: "标准差" })),
+      ...Object.entries(r.per_agent).map(([a, v]) => el("div", {}, el("b", { text: fmt(v) }), el("span", { text: a + " 自身成本（不含首日）" }))),
+      el("div", {}, el("b", { text: r.trace.days }), el("span", { text: r.trace.terminated ? "天（因缺货终止）" : "天" })));
+    const t = r.trace;
+    drawChart($("ex-inv"), { xlabel: "Day", ylabel: "库存", series: Object.entries(t.inventory).map(([a, y]) =>
+      ({ name: a, color: AGENT_COLORS[a], x: t.day, y })).concat([{ name: "需求", color: cssVar("--muted"), x: t.day, y: t.demand, width: .8 }]) });
+    drawChart($("ex-cost"), { xlabel: "Day", ylabel: "成本", bars: [{ name: "补货日的团队成本", color: "#e07b39", x: t.day, y: t.cost }] });
+  } catch (e) { setMsg("ex-msg", e.message, "error"); }
+}
+async function bestFixed() {
+  setMsg("ex-msg", "网格搜索中（约 360 个策略，可能需要一分钟）…"); $("ex-best").disabled = true;
+  try {
+    const r = await api("best_fixed", { env: $("ex-env").value, seeds: 5, max_stockout_days: $("ex-noterm").checked ? 0 : 12 });
+    setMsg("ex-msg", ""); $("ex-best-card").style.display = "";
+    const t = $("ex-best-table"); t.innerHTML = "";
+    t.append(el("tr", {}, ...["排名", "零售商订货量", "再订货点", "上游订货量", "平均总成本", ""].map(x => el("th", { text: x }))));
+    r.best.forEach((b, i) => t.append(el("tr", {}, el("td", { text: i + 1 }), el("td", { text: b.q_retailer }), el("td", { text: b.reorder_point }),
+      el("td", { text: b.q_upstream }), el("td", { text: fmt(b.mean) }), el("td", {}, el("button", { class: "btn", text: "使用", onclick: () => {
+        $("ex-r").value = b.q_retailer; $("ex-rp").value = b.reorder_point; $("ex-f").value = b.q_upstream; $("ex-w").value = b.q_upstream; simulate(); } })))));
+  } catch (e) { setMsg("ex-msg", e.message, "error"); }
+  finally { $("ex-best").disabled = false; }
+}
+
+// ---------------------------------------------------------------- init
+let jobsTimer = null, runTimer = null;
+function showTab(name) {
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.id === "tab-" + name));
+  try { sessionStorage.setItem("masc-tab", name); } catch (e) { }
+  if (name === "jobs") loadJobs();
+  if (name === "results") { loadRuns(); if (currentCurves) drawRun(); }
+}
+async function init() {
+  if (!TOKEN) { setMsg("global-error", "网址里没有令牌：请使用 masc-ui 启动时打印的完整网址（含 ?token=...）", "error"); return; }
+  try { META = await api("meta"); } catch (e) { setMsg("global-error", e.message, "error"); return; }
+  $("info").textContent = `${META.user}@${META.hostname} · 结果目录 ${META.root} · masc ${META.version}` +
+    (META.has_slurm ? " · SLURM 可用" : " · 无 SLURM");
+  $("runs-root").textContent = META.root;
+  document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
+
+  buildItems($("train-items"), META.envs.map(e => ({ id: e.id, label: e.short, note: e.id, color: e.color, checked: true })));
+  buildItems($("continual-items"), META.tasks.map(t => ({ id: t.id, label: t.id, note: `${t.envs.join(" → ")}，默认 ${t.rounds} 轮`, checked: false })));
+  document.querySelectorAll("[data-select]").forEach(b => b.addEventListener("click", () => {
+    const box = $(b.dataset.select), v = b.dataset.value;
+    box.querySelectorAll("input").forEach(i => { const env = META.envs.find(e => e.id === i.value); i.checked = v === "all" || env.short.startsWith(v); });
+    box.dispatchEvent(new Event("itemschange"));
+  }));
+  buildForm("train", $("train-form")); buildForm("continual", $("continual-form"));
+  buildTarget("train", $("train-target")); buildTarget("continual", $("continual-target"));
+  setupCommandTab("train"); setupCommandTab("continual");
+  document.querySelectorAll("input[name=algo]").forEach(r => r.addEventListener("change", () => {
+    $("train-target")._set("job_name", "masc_" + currentKind("train")); refreshPreview.train(); }));
+  $("preset-paper").addEventListener("click", () => { setValues("train", PRESETS.paper); $("train-target")._set("time", "26:00:00"); });
+  $("preset-quick").addEventListener("click", () => { setValues("train", PRESETS.quick); $("train-target")._set("time", "00:30:00"); });
+  $("preset-default").addEventListener("click", () => setValues("train", {}));
+  setValues("train", PRESETS.paper); setValues("continual", {});
+
+  $("jobs-refresh").addEventListener("click", loadJobs);
+  jobsTimer = setInterval(() => { if ($("jobs-auto").checked && $("tab-jobs").classList.contains("active")) loadJobs(); }, 20000);
+  $("runs-refresh").addEventListener("click", loadRuns);
+  $("runs-filter").addEventListener("change", renderRuns);
+  $("run-show-seeds").addEventListener("change", drawRun);
+  $("plot-run").addEventListener("click", replot);
+  runTimer = setInterval(() => { if ($("run-auto").checked && currentRun && $("tab-results").classList.contains("active")) loadCurves(); }, 30000);
+  window.addEventListener("resize", debounce(() => { if (currentCurves) drawRun(); }, 200));
+
+  for (const e of META.envs) $("ex-env").append(el("option", { value: e.id, text: `${e.short}（${e.id}）` }));
+  $("ex-run").addEventListener("click", simulate); $("ex-best").addEventListener("click", bestFixed);
+
+  let tab = "train"; try { tab = sessionStorage.getItem("masc-tab") || "train"; } catch (e) { }
+  showTab(tab);
+}
+init();
+</script>
+</body>
+</html>

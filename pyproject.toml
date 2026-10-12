@@ -32,9 +32,13 @@ masc-continual = "masc.continual:main"
 masc-plot = "masc.plotting:main"
 masc-plot-continual = "masc.plotting:main_continual"
 masc-check = "masc.marl_env:main"
+masc-ui = "masc.ui.server:main"
 
 [tool.setuptools.packages.find]
 include = ["masc*"]
+
+[tool.setuptools.package-data]
+"masc.ui" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
