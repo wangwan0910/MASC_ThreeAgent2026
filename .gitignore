@@ -1,4 +1,28 @@
+# ----- training outputs (large, sync separately with rsync if needed) -----
+# TensorBoard logs and Tune checkpoints, e.g. bat/tu_logs/Bat10/<time>/
+*_logs/
+tu_logs/
+ray_results/
+wandb/
+checkpoint_*/
+*_models/
+csv_results/
+*.pt
+*.pth
+*.pkl
+
+# ----- SLURM job output -----
+*.out
+*.err
+slurm-*.out
+
+# ----- Python -----
 __pycache__/
-*.pyc
+*.py[cod]
+.ipynb_checkpoints/
+
+# ----- editor / OS -----
 .DS_Store
+.vscode/
+.idea/
 .claude/
