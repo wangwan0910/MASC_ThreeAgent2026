@@ -248,6 +248,9 @@ def init_ray(**kwargs):
         job = os.environ["SLURM_JOB_ID"] + "_" + os.environ.get("SLURM_ARRAY_TASK_ID", "0")
         kwargs.setdefault("_temp_dir", f"/tmp/ray_{job}")
         kwargs.setdefault("include_dashboard", False)
+        # Ray's default object store is ~30% of the node memory, per instance: with many jobs on one node (11 jobs on
+        # red6066, 2026-10-12) the Ray instances failed to start. The training needs little object store memory
+        kwargs.setdefault("object_store_memory", 2 * 1024 ** 3)
     pythonpath = os.pathsep.join([ENV_DIR, os.environ.get("PYTHONPATH", "")]).rstrip(os.pathsep)
     ray.init(runtime_env={"env_vars": {"PYTHONPATH": pythonpath}}, ignore_reinit_error=True, **kwargs)
 

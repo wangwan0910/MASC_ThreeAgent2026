@@ -49,4 +49,16 @@ export PYTHONUNBUFFERED=1             # print the training progress to the .out 
 ENV=${ENVS[${SLURM_ARRAY_TASK_ID:-0}]}
 echo "job ${SLURM_JOB_ID:-local} task ${SLURM_ARRAY_TASK_ID:-0} on $(hostname), ${SLURM_CPUS_PER_TASK:-?} cpus, env $ENV, dir $(pwd)"
 python -c "import ray, torch, gymnasium, tensorboard; print('ray', ray.__version__, 'torch', torch.__version__)"
-python main_rppo.py --env "$ENV" --num-env-runners "$NUM_ENV_RUNNERS" --time-budget-hours "$TIME_BUDGET_HOURS" $ENV_ARGS "$@"
+# many jobs can start on the same node at the same time: start at a random delay, and run again once if python fails
+# within 5 minutes (the local Ray instance did not start; a real training run takes much longer)
+sleep $((RANDOM % 60))
+for attempt in 1 2; do
+    start=$(date +%s)
+    status=0
+    python main_rppo.py --env "$ENV" --num-env-runners "$NUM_ENV_RUNNERS" --time-budget-hours "$TIME_BUDGET_HOURS" $ENV_ARGS "$@" || status=$?
+    if [ "$status" = 0 ] || [ $(( $(date +%s) - start )) -gt 300 ] || [ "$attempt" = 2 ]; then
+        exit "$status"
+    fi
+    echo "python failed after $(( $(date +%s) - start )) s (exit $status), retrying in 60 s"
+    sleep 60
+done
