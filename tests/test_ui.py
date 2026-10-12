@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.request
 
+import numpy as np
 import pytest
 
 from masc.ui import server as ui
@@ -140,3 +141,24 @@ def test_mac_only(monkeypatch):
         ui.check_platform()
     monkeypatch.setattr(sys, "platform", "darwin")
     ui.check_platform()
+
+
+def test_transformer_algorithm():
+    schema = {f["option"]: f for f in ui.parser_schema(ui.COMMANDS["train_transformer"]["parser"]())}
+    assert schema["--memory"]["group"] == "Transformer" and schema["--memory"]["default"] == 20
+    argv, ns = ui.build_argv("train_transformer", {"--memory": "30", "--head-hiddens": "32 32", "--dir": "tu2"})
+    assert argv == ["--memory", "30", "--head-hiddens", "32", "32"] and ns.tf_memory == 30
+    cmd = ui.python_command("train_transformer", "BatSupplyEnv-v1", argv)
+    assert cmd[1:5] == ["-m", "masc.main_transformerPPO", "--env", "BatSupplyEnv-v1"]
+    assert list(ui.ALGORITHMS) == ["train", "train_rppo", "train_transformer"]
+
+
+def test_seed_curves_with_drifting_steps():
+    from masc.plotting import align_curves
+    a = (np.arange(1, 101) * 2048, np.linspace(-10, 0, 100))
+    steps_b = np.arange(1, 101) * 2048
+    steps_b[50:] += 1024                                 # one iteration sampled 1024 more steps
+    b = (steps_b, np.linspace(-10, 0, 100) - 1)
+    grid, values = align_curves([a, b])
+    assert grid[-1] == 100 * 2048 and values.shape == (2, 100)
+    assert np.allclose(values[1] - values[0], -1, atol=0.06)

@@ -49,6 +49,8 @@ MASC_Code/
 │   ├── marl_env.py         多智能体封装、环境编号、PPO 配置（build_ppo_config）、Ray 初始化
 │   ├── train.py            单环境训练、训练监控、制图与 CSV          → masc-train
 │   ├── train_rppo.py       同上，策略带 LSTM（Recurrent PPO）         → masc-train-rppo
+│   ├── main_transformerPPO.py  同上，策略为门控 Transformer（GTrXL 式）  → masc-train-transformer
+│   ├── models/             可插拔的网络结构注册表：mlp、lstm、transformer（transformer.py）
 │   ├── continual.py        环境之间的连续学习（6 个任务）              → masc-continual
 │   └── plotting.py         训练曲线（单 trial / 多种子均值±std）、连续学习曲线 → masc-plot / masc-plot-continual
 ├── jobs/                   SLURM 作业脚本：job_train.sh（6 个环境）、job_continual.sh（6 个任务）
@@ -154,6 +156,7 @@ MASC_Code/
 | grad_clip | 0.5 | |
 | train_batch_size / minibatch / epochs | 2048 / 256 / 5 | 每次迭代 40 步 SGD |
 | seed | `None` | 网络与需求的随机种子 |
+| model / model_config | `mlp`（`use_lstm=True` 时 `lstm`） | 智能体的网络：`masc.models` 注册表中的名字及其设置 |
 
 ---
 
@@ -190,6 +193,7 @@ pip install git+https://github.com/wangwan0910/MASC_ThreeAgent2026.git  # 直接
 |---|---|---|
 | `masc-train` | `python -m masc.train` | 单环境多智能体 PPO 训练 |
 | `masc-train-rppo` | `python -m masc.train_rppo` | 同上，策略带 LSTM |
+| `masc-train-transformer` | `python -m masc.main_transformerPPO` | 同上，策略为门控 Transformer |
 | `masc-continual` | `python -m masc.continual` | 连续学习 |
 | `masc-plot` | `python -m masc.plotting` | 从 TensorBoard 日志重画训练曲线 |
 | `masc-plot-continual` | — | 重画连续学习曲线 |
@@ -234,7 +238,45 @@ masc-train --env BatSupplyEnv-v3 --no-stockout-termination --lr 0.0003 0.0001
 tensorboard --logdir tu_logs      # 查看训练过程
 ```
 
-`masc-train-rppo` 参数相同，策略带 LSTM（图名前缀 `RPPO_`，日志默认在 `tu1_logs/`）。
+### 三种算法
+
+| 算法 | 命令 | 网络（`masc.models` 中的名字） | 图名前缀 | 默认日志目录 |
+|---|---|---|---|---|
+| PPO | `masc-train` | `mlp`：策略、价值各一个 MLP 64×64 | `PPO_` | `tu_logs/` |
+| Recurrent PPO | `masc-train-rppo` | `lstm`：LSTM 64 + MLP，序列长度 20 | `RPPO_` | `tu1_logs/` |
+| Transformer PPO | `masc-train-transformer` | `transformer`：门控 Transformer（GTrXL 式） | `TPPO_` | `tu2_logs/` |
+
+三个命令的参数、训练监控、多种子、制图和 CSV 完全相同；`masc-train-transformer` 另有一组 Transformer 参数。
+
+**Transformer PPO**（`masc/models/transformer.py`、`masc/main_transformerPPO.py`）参照 RLlib 的
+[attention_net.py](https://github.com/ray-project/ray/blob/ray-2.6.1/rllib/examples/attention_net.py)（PPO + GTrXL，
+`use_attention`）。该示例只适用于 RLlib 的旧 API（ModelV2），本项目用新 API（RLModule），所以实现为一个自定义的
+有状态 RLModule：
+
+- 每个智能体保存本 episode 最近 `memory` 步的观测作为状态，每一步对"记忆 + 当前观测"这个滑动窗口做注意力；
+  episode 开始之前的记忆位置被屏蔽。
+- 结构：线性输入投影 + 位置嵌入 → `num_layers` 层门控 Transformer（LayerNorm → 多头注意力 → GRU 门，
+  LayerNorm → 逐位置 MLP → GRU 门，GRU 门初始偏置使其接近恒等映射，同 GTrXL）→ 当前步的输出 →
+  策略头（logits）/ 价值头；策略与价值共享 Transformer。
+- 逐步采样与整段序列训练用同一个窗口计算，结果完全一致（测试 `test_transformer_step_by_step_equals_sequence`）。
+- 与旧 API 的 GTrXL 的区别：GTrXL 的记忆是各层的隐藏状态，这里的记忆是观测本身；不支持
+  `attention_use_n_prev_actions/rewards`。
+
+| 参数 | 默认 | 对应 attention_net.py 的选项 |
+|---|---|---|
+| `--memory` | 20 | `attention_memory_inference` / `attention_memory_training` |
+| `--num-layers` | 1 | `attention_num_transformer_units` |
+| `--d-model` | 64 | `attention_dim` |
+| `--num-heads` | 2 | `attention_num_heads` |
+| `--head-dim` | 32 | `attention_head_dim` |
+| `--ff-dim` | 64 | `attention_position_wise_mlp_dim` |
+| `--gate-bias` | 2.0 | `attention_init_gru_gate_bias` |
+| `--max-seq-len` | 20 | `max_seq_len` |
+| `--head-hiddens` | 64 | 策略头、价值头的隐藏层 |
+
+```bash
+masc-train-transformer --env StoSupplyEnv-v3 --no-stockout-termination --memory 30 --num-layers 2
+```
 
 ### 主要参数
 
@@ -311,7 +353,8 @@ masc-plot tu_team_logs/Bat10/<时间戳> --lr 0.0003 ...                # 单 tr
 | `jobs/job_continual.sh` | 0-01-1 | 1-01-0 | 3-7-10 | 10-7-3 | bat10-sto1 | sto1-bat10 |
 
 `job_train.sh` 默认传入 `--reward-mode $REWARD_MODE --no-stockout-termination --dir tu_$REWARD_MODE`
-（`REWARD_MODE` 默认 `team`；`ALGO=rppo` 时用 `masc-train-rppo`，日志前缀 `tu1_`）；`sbatch` 后面的参数原样传给
+（`REWARD_MODE` 默认 `team`；`ALGO=rppo` 时用 `masc-train-rppo`，日志前缀 `tu1_`；`ALGO=transformer` 时用
+`masc-train-transformer`，日志前缀 `tu2_`）；`sbatch` 后面的参数原样传给
 `masc-train`，并且排在默认参数之后，可以覆盖它们。
 
 ```bash
@@ -319,6 +362,7 @@ mkdir -p runs && cd runs
 sbatch ../jobs/job_train.sh                                   # 六个环境，PPO，团队奖励
 sbatch --array=0-2 ../jobs/job_train.sh                       # 只跑批量需求环境
 ALGO=rppo sbatch ../jobs/job_train.sh                         # Recurrent PPO
+ALGO=transformer sbatch ../jobs/job_train.sh                  # Transformer PPO
 REWARD_MODE=individual sbatch ../jobs/job_train.sh            # 个体奖励，日志在 tu_individual_logs/
 sbatch ../jobs/job_train.sh --seeds 0 1 2 3 4 --lr 0.0001 --no-early-stop \
     --total-timesteps 2000000 --num-env-runners 2 --dir tu_seeds    # 5 种子
@@ -379,7 +423,7 @@ mkdir -p runs && masc-ui --root runs          # 自动在浏览器中打开 http
 
 | 页面 | 功能 |
 |---|---|
-| 训练 | 勾选环境、选择 PPO / RPPO；参数表单由 `masc-train` 的命令行自动生成（新增参数自动出现，修改过的值高亮）；预设"论文设置 / 快速测试"；实时预览完整命令；提交后在本机运行 |
+| 训练 | 勾选环境、选择 PPO / RPPO / Transformer PPO（每种算法一张表单）；参数表单由 `masc-train` 的命令行自动生成（新增参数自动出现，修改过的值高亮）；预设"论文设置 / 快速测试"；实时预览完整命令；提交后在本机运行 |
 | 连续学习 | 勾选任务（6 个），参数同 `masc-continual` |
 | 运行 | 本机运行队列：状态、当前环境、退出码、日志（自动刷新）、取消 |
 | 结果 | 结果目录下所有运行（单环境训练、连续学习，运行中的也会显示）；交互式训练曲线（多种子显示均值 ± std 阴影）、trial 状态与 `would_stop`、运行目录里的图；用 `masc-plot` 重新制图 |
@@ -471,6 +515,12 @@ rsync -av ww1a23@<iridis登录节点>:/iridisfs/scratch/ww1a23/MASC_Code/runs/tu
    例如 `[Factory(), Warehouse(), Distributor(), Retailer()]`。
 
 观测空间、动作空间、成本、CSV 列、多智能体封装都会自动跟随智能体列表；最下游必须是 `Retailer`。
+
+增加一种网络结构（可插拔）：写一个 TorchRLModule（PPO 还要实现 `ValueFunctionAPI`），用
+`masc.models.register_model("<名字>", defaults={...})` 注册一个返回 `RLModuleSpec` 的函数，然后
+`build_ppo_config(env_config, model="<名字>", model_config={...})` 即可使用；再仿照 `masc/main_transformerPPO.py`
+写一个入口脚本、在 `pyproject.toml` 中登记命令，在网页界面 `masc.ui.server.COMMANDS` / `ALGORITHMS` 中登记一行，
+它就出现在训练页的算法列表里。
 
 增加一种需求：在 `masc/envs/` 中从 `POSingAgent1W1F` 派生并实现 `gen_demand()`，再在
 `masc.marl_env.ENV_IDS` / `ENV_SHORT_NAMES` 中登记一个环境 id，在 `masc.plotting.ENV_COLORS` 中给它一种颜色。

@@ -151,8 +151,7 @@ def trial_seed(trial_dir):
 
 def seed_curves(logdir, lr=None):
     """(steps, returns of shape (n_seeds, n_steps), seeds) of all the trials of one learning rate (default: the
-    learning rate with the best mean final return), on the environment steps common to all the trials (every
-    iteration samples the same number of steps, so the trials have the same steps)."""
+    learning rate with the best mean final return), interpolated on a common step grid (align_curves)."""
     trials = find_trials(logdir)
     if not trials:
         raise FileNotFoundError(f"no TensorBoard logs under {logdir}")
@@ -169,9 +168,21 @@ def seed_curves(logdir, lr=None):
     if not group:
         raise ValueError(f"no trial with lr={lr} under {logdir}")
     group.sort(key=lambda t: (trial_seed(t) is None, trial_seed(t)))
-    common = sorted(set.intersection(*(set(data[t][0].tolist()) for t in group)))
-    returns = np.array([[dict(zip(data[t][0].tolist(), data[t][1]))[s] for s in common] for t in group])
-    return np.array(common), returns, [trial_seed(t) for t in group], lr
+    steps, returns = align_curves([data[t] for t in group])
+    return steps, returns, [trial_seed(t) for t in group], lr
+
+
+def align_curves(curves):
+    """Curves [(steps, values)] of several trials on one step grid: the steps of the first trial within the range
+    covered by all of them, the values linearly interpolated. (An iteration samples a little more than
+    train_batch_size steps now and then, e.g. 3072 instead of 2048, so the step values of the trials drift apart and
+    keeping only the steps common to all trials would cut the curves.) Returns (steps, values (n_trials, n_steps))."""
+    lo = max(float(s[0]) for s, _ in curves)
+    hi = min(float(s[-1]) for s, _ in curves)
+    grid = np.asarray(curves[0][0], dtype=float)
+    grid = grid[(grid >= lo) & (grid <= hi)]
+    return grid, np.array([np.interp(grid, np.asarray(s, dtype=float), np.asarray(v, dtype=float))
+                           for s, v in curves])
 
 
 def plot_seeds(logdir, label, out, lr=None, xlim=XLIM, ylim=YLIM, env=None, smoothing=0.0):
@@ -195,7 +206,7 @@ def plot_seeds(logdir, label, out, lr=None, xlim=XLIM, ylim=YLIM, env=None, smoo
     plt.close(fig)
     print(f"figure {out}: lr={lr}, {len(seeds)} seeds {seeds}, {len(steps)} points, "
           f"{int(steps[-1]) if len(steps) else 0} steps, final mean {mean[-50:].mean():.4g} +- {std[-50:].mean():.3g}")
-    if len(steps) and (steps[-1] > xlim[1] or (mean - std).min() < ylim[0] or (mean + std).max() > ylim[1]):
+    if len(steps) and (steps[-1] > xlim[1] * 1.01 or (mean - std).min() < ylim[0] or (mean + std).max() > ylim[1]):
         print(f"WARNING: the curve goes beyond the common axis limits x {xlim}, y {ylim}")
     return out, (steps, mean, std, seeds, lr)
 
@@ -221,7 +232,7 @@ def plot_run(logdir, label, out, lr=None, smoothing=0.6, xlim=XLIM, ylim=YLIM, e
     plot_curve(steps, returns, label, out, smoothing, xlim, ylim, color=env_color(env))
     print(f"figure {out}: trial {os.path.basename(trial)} (lr={trial_lr(trial)}), {len(steps)} points, "
           f"{int(steps[-1]) if len(steps) else 0} steps")
-    if len(steps) and (steps[-1] > xlim[1] or returns.min() < ylim[0] or returns.max() > ylim[1]):
+    if len(steps) and (steps[-1] > xlim[1] * 1.01 or returns.min() < ylim[0] or returns.max() > ylim[1]):
         print(f"WARNING: the curve goes beyond the common axis limits x {xlim}, y {ylim} "
               f"(steps up to {steps[-1]:.3g}, returns {returns.min():.3g} to {returns.max():.3g})")
     return out

@@ -126,7 +126,11 @@ def build_parser(default_name="PPO", default_dir="tu", prog=None):
 
 
 def parse_args(default_name="PPO", default_dir="tu", argv=None):
-    args = build_parser(default_name, default_dir).parse_args(argv)
+    return finish_args(build_parser(default_name, default_dir).parse_args(argv))
+
+
+def finish_args(args):
+    """Defaults that depend on other arguments (csv_dir under out_dir)."""
     if args.csv_dir is None:
         args.csv_dir = os.path.join(args.out_dir, "csv_results")
     return args

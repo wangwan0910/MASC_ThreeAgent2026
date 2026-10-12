@@ -12,7 +12,8 @@
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=ww1a23@soton.ac.uk
 
-# Single-environment training (masc-train, or masc-train-rppo with ALGO=rppo), one SLURM array task per environment
+# Single-environment training (masc-train; ALGO=rppo: masc-train-rppo, ALGO=transformer: masc-train-transformer),
+# one SLURM array task per environment
 # (each task is a separate job with its own 26 h limit, they run in parallel):
 #   task 0: BatSupplyEnv-v1 (Bat10)   task 1: BatSupplyEnv-v2 (Bat7)    task 2: BatSupplyEnv-v3 (Bat3)
 #   task 3: StoSupplyEnv-v3 (Sto1)    task 4: StoSupplyEnv-v2 (Sto01)   task 5: StoSupplyEnv-v1 (Sto0)
@@ -25,19 +26,20 @@
 #   sbatch ../jobs/job_train.sh                                   all six environments, PPO, team reward
 #   sbatch --array=0-2 ../jobs/job_train.sh                       only the batch environments
 #   ALGO=rppo sbatch ../jobs/job_train.sh                         recurrent PPO (LSTM policies)
+#   ALGO=transformer sbatch ../jobs/job_train.sh                  transformer PPO (gated transformer policies)
 #   REWARD_MODE=individual sbatch ../jobs/job_train.sh            individual rewards, logs in tu_individual_logs/
 #   sbatch ../jobs/job_train.sh --seeds 0 1 2 3 4 --lr 0.0001 --no-early-stop --total-timesteps 2000000 \
 #       --num-env-runners 2 --dir tu_seeds                        5 seeds, mean +- std figures
 # Extra arguments go to masc-train after the defaults below, so they can override them.
 
 ENVS=(BatSupplyEnv-v1 BatSupplyEnv-v2 BatSupplyEnv-v3 StoSupplyEnv-v3 StoSupplyEnv-v2 StoSupplyEnv-v1)
-ALGO=${ALGO:-ppo}                    # ppo: masc-train, rppo: masc-train-rppo
+ALGO=${ALGO:-ppo}                    # ppo: masc-train, rppo: masc-train-rppo, transformer: masc-train-transformer
 NUM_ENV_RUNNERS=4                    # sampling workers per trial (1 + 4 CPUs per trial; 16 CPUs -> up to 3 trials)
 TIME_BUDGET_HOURS=25                 # below --time=26:00:00: leaves time for the final checkpoint and the figure
 REWARD_MODE=${REWARD_MODE:-team}     # team / individual / mixed
 # no stockout termination: every episode runs the T = 100 days. With the termination after 12 stockout days the agents
 # learned to end the episodes early instead of serving the demand (smoke tests of 2026-10-12)
-LOG_PREFIX=tu; [ "$ALGO" = rppo ] && LOG_PREFIX=tu1
+LOG_PREFIX=tu; [ "$ALGO" = rppo ] && LOG_PREFIX=tu1; [ "$ALGO" = transformer ] && LOG_PREFIX=tu2
 DEFAULT_ARGS="--reward-mode $REWARD_MODE --no-stockout-termination --dir ${LOG_PREFIX}_$REWARD_MODE"
 
 set -eo pipefail
@@ -53,7 +55,8 @@ export PYTHONUNBUFFERED=1             # print the training progress to the .out 
 case "$ALGO" in
     ppo) CMD=masc-train ;;
     rppo) CMD=masc-train-rppo ;;
-    *) echo "unknown ALGO=$ALGO (ppo or rppo)"; exit 2 ;;
+    transformer) CMD=masc-train-transformer ;;
+    *) echo "unknown ALGO=$ALGO (ppo, rppo or transformer)"; exit 2 ;;
 esac
 command -v "$CMD" > /dev/null || { echo "$CMD not found: pip install -e <repo> in the conda environment"; exit 2; }
 

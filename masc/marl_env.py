@@ -265,8 +265,11 @@ def init_ray(**kwargs):
 def build_ppo_config(env_config, lr=3e-4, hiddens=(64, 64), use_lstm=False, lstm_cell_size=64, max_seq_len=20,
                      num_env_runners=1, num_envs_per_env_runner=1, num_gpus=0,
                      train_batch_size=2048, minibatch_size=256, num_epochs=5, entropy_coeff=0.01,
-                     vf_clip_param=10.0, clip_params=None, seed=None):
+                     vf_clip_param=10.0, clip_params=None, seed=None, model=None, model_config=None):
     """Multi-agent PPO config: one independent policy (RLModule) per supply chain stage.
+    model: network of the agents, a name of the masc.models registry ("mlp", "lstm", "transformer", ...), with its
+        settings model_config (dict, unset settings keep the defaults of the model). Default: "lstm" if use_lstm
+        else "mlp", with hiddens / lstm_cell_size / max_seq_len.
     Compared with the stable-baselines3 PPO defaults used before (minibatch 64, 10 epochs, no entropy bonus), the
     updates are gentler (320 -> 40 SGD steps per iteration) and the entropy bonus keeps the policies from becoming
     deterministic too early (the collapses of the first runs followed KL spikes of near-deterministic policies).
@@ -278,14 +281,15 @@ def build_ppo_config(env_config, lr=3e-4, hiddens=(64, 64), use_lstm=False, lstm
     seed: random seed of the networks and of the environments (demand), None: not fixed; a Tune grid search over
         seeds gives one trial per seed."""
     from ray.rllib.algorithms.ppo import PPOConfig
-    from ray.rllib.core.rl_module.default_model_config import DefaultModelConfig
     from ray.rllib.core.rl_module.multi_rl_module import MultiRLModuleSpec
-    from ray.rllib.core.rl_module.rl_module import RLModuleSpec
+
+    from .models import build_rl_module_spec
 
     agent_ids = SupplyChainMARLEnv(env_config).possible_agents
-    model_config = DefaultModelConfig(
-        fcnet_hiddens=list(hiddens), fcnet_activation="tanh", vf_share_layers=False,
-        use_lstm=use_lstm, lstm_cell_size=lstm_cell_size, max_seq_len=max_seq_len)
+    if model is None:
+        model = "lstm" if use_lstm else "mlp"
+        model_config = {"hiddens": tuple(hiddens), **({"lstm_cell_size": lstm_cell_size, "max_seq_len": max_seq_len}
+                                                       if use_lstm else {}), **(model_config or {})}
 
     return (
         PPOConfig()
@@ -303,7 +307,7 @@ def build_ppo_config(env_config, lr=3e-4, hiddens=(64, 64), use_lstm=False, lstm
                      algorithm_config_overrides_per_module={
                          aid: PPOConfig.overrides(clip_param=c) for aid, c in (clip_params or {}).items()})
         .rl_module(rl_module_spec=MultiRLModuleSpec(rl_module_specs={
-            aid: RLModuleSpec(model_config=model_config) for aid in agent_ids}))
+            aid: build_rl_module_spec(model, model_config) for aid in agent_ids}))
     )
 
 

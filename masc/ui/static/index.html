@@ -111,8 +111,7 @@ dialog img { max-width: 90vw; max-height: 85vh; }
             <button class="btn" data-select="train-items" data-value="Sto">只选 Sto</button>
           </div>
           <h3>算法</h3>
-          <label class="radio"><input type="radio" name="algo" value="train" checked> PPO（MLP）</label>
-          <label class="radio"><input type="radio" name="algo" value="train_rppo"> RPPO（LSTM）</label>
+          <div id="algos"></div>
         </div>
         <div class="card">
           <h2>预设</h2>
@@ -386,7 +385,7 @@ function buildForm(kind, container) {
   const values = {};
   const groups = {};
   for (const f of schema) (groups[f.group] = groups[f.group] || []).push(f);
-  const order = ["环境与奖励", "训练", "PPO", "收敛判据", "输出", "其他"];
+  const order = ["环境与奖励", "训练", "PPO", "Transformer", "收敛判据", "输出", "其他"];
   container.innerHTML = "";
   const inputs = {};
   for (const g of order.filter(g => groups[g]).concat(Object.keys(groups).filter(g => !order.includes(g)))) {
@@ -454,10 +453,9 @@ function buildItems(container, items) {
 }
 function selectedItems(container) { return [...container.querySelectorAll("input:checked")].map(i => i.value); }
 
-const previewKinds = { train: "train", continual: "continual" };
 function currentKind(tab) { return tab === "train" ? document.querySelector("input[name=algo]:checked").value : "continual"; }
 function request(tab) {
-  const kind = currentKind(tab), formKind = tab === "train" ? "train" : "continual";
+  const kind = currentKind(tab), formKind = kind;
   // only the values changed in the form: the command compares them with its own defaults (RPPO: --dir tu1)
   const values = {};
   for (const [opt, { field }] of Object.entries(FORMS[formKind].inputs)) {
@@ -469,7 +467,7 @@ function request(tab) {
 const refreshPreview = {};
 function changed(kind) {
   const tab = kind === "continual" ? "continual" : "train";
-  markChanged(tab === "train" ? "train" : "continual");
+  markChanged(kind);
   if (refreshPreview[tab]) refreshPreview[tab]();
 }
 function setupCommandTab(tab) {
@@ -683,14 +681,22 @@ async function init() {
     box.querySelectorAll("input").forEach(i => { const env = META.envs.find(e => e.id === i.value); i.checked = v === "all" || env.short.startsWith(v); });
     box.dispatchEvent(new Event("itemschange"));
   }));
-  buildForm("train", $("train-form")); buildForm("continual", $("continual-form"));
+  // one form per algorithm (each command has its own options, e.g. the transformer settings)
+  META.algorithms.forEach((a, i) => {
+    $("algos").append(el("label", { class: "radio" }, el("input", { type: "radio", name: "algo", value: a.kind, checked: i === 0 }), a.label));
+    const box = el("div", { id: "form-" + a.kind, style: i === 0 ? "" : "display:none" });
+    $("train-form").append(box); buildForm(a.kind, box);
+  });
+  buildForm("continual", $("continual-form"));
   buildTarget("train", $("train-target")); buildTarget("continual", $("continual-target"));
   setupCommandTab("train"); setupCommandTab("continual");
-  document.querySelectorAll("input[name=algo]").forEach(r => r.addEventListener("change", () => refreshPreview.train()));
-  $("preset-paper").addEventListener("click", () => setValues("train", PRESETS.paper));
-  $("preset-quick").addEventListener("click", () => setValues("train", PRESETS.quick));
-  $("preset-default").addEventListener("click", () => setValues("train", {}));
-  setValues("train", PRESETS.paper); setValues("continual", {});
+  document.querySelectorAll("input[name=algo]").forEach(r => r.addEventListener("change", () => {
+    META.algorithms.forEach(a => { $("form-" + a.kind).style.display = a.kind === r.value ? "" : "none"; });
+    refreshPreview.train(); }));
+  $("preset-paper").addEventListener("click", () => setValues(currentKind("train"), PRESETS.paper));
+  $("preset-quick").addEventListener("click", () => setValues(currentKind("train"), PRESETS.quick));
+  $("preset-default").addEventListener("click", () => setValues(currentKind("train"), {}));
+  META.algorithms.forEach(a => setValues(a.kind, PRESETS.paper)); setValues("continual", {});
 
   $("jobs-refresh").addEventListener("click", loadJobs);
   jobsTimer = setInterval(() => { if ($("jobs-auto").checked && $("tab-jobs").classList.contains("active")) loadJobs(); }, 5000);

@@ -44,6 +44,7 @@ import numpy as np
 
 from .. import __version__
 from .. import continual as continual_mod
+from .. import main_transformerPPO as transformer_mod
 from .. import train as train_mod
 from ..marl_env import ENV_IDS, ENV_SHORT_NAMES, SupplyChainMARLEnv
 
@@ -58,6 +59,8 @@ GROUPS = {
     "num_env_runners": "训练", "num_gpus": "训练", "checkpoint_freq": "训练", "rounds": "训练",
     "timesteps_per_phase": "训练",
     "vf_clip": "PPO", "factory_clip": "PPO",
+    **{f"tf_{key}": "Transformer" for key in ("memory", "num_layers", "d_model", "num_heads", "head_dim", "ff_dim",
+                                              "gate_bias", "max_seq_len", "head_hiddens")},
     "conv_window": "收敛判据", "conv_tol": "收敛判据", "conv_patience": "收敛判据", "min_timesteps": "收敛判据",
     "min_gain": "收敛判据", "near_best_tol": "收敛判据", "collapse_tol": "收敛判据", "collapse_patience": "收敛判据",
     "stall_patience": "收敛判据", "no_monitor": "收敛判据", "monitor_window": "收敛判据", "no_learning_steps": "收敛判据",
@@ -70,9 +73,13 @@ COMMANDS = {
     "train_rppo": {"module": "masc.train_rppo",
                    "parser": lambda: train_mod.build_parser("RecurrentPPO_pi=64,64_vf=64,64_lstm=1", "tu1"),
                    "item_option": "--env", "items": list(ENV_IDS)},
+    "train_transformer": {"module": "masc.main_transformerPPO", "parser": transformer_mod.build_parser,
+                          "item_option": "--env", "items": list(ENV_IDS)},
     "continual": {"module": "masc.continual", "parser": continual_mod.build_parser,
                   "item_option": "--task", "items": list(continual_mod.TASKS)},
 }
+# algorithms of the training page (commands above), in the order of the page
+ALGORITHMS = {"train": "PPO（MLP）", "train_rppo": "RPPO（LSTM）", "train_transformer": "Transformer PPO（GTrXL）"}
 # options handled by the interface itself (environment / task, output directory = results root)
 HIDDEN = {"env", "task", "out_dir", "help"}
 
@@ -246,6 +253,7 @@ def run_curves(root, rel_path):
     """Curves of a run: training: team_return of every trial (and the mean +- std of the trials of the same lr if
     they have several seeds); continual: episode_return_mean of every phase."""
     import pandas as pd
+    from ..plotting import align_curves
     run_dir = safe_path(root, rel_path)
     if os.path.isdir(os.path.join(run_dir, "tb")):     # continual learning run
         from ..plotting import read_phases
@@ -276,12 +284,11 @@ def run_curves(root, rel_path):
     for lr, curves in groups.items():
         if len(curves) < 2:
             continue
-        common = sorted(set.intersection(*(set(c) for c in curves)))
-        if not common:
+        grid, values = align_curves([(sorted(c), [c[k] for k in sorted(c)]) for c in curves])
+        if not len(grid):
             continue
-        values = np.array([[c[s] for s in common] for c in curves])
-        xs, mean = _downsample(common, values.mean(axis=0).tolist())
-        _, std = _downsample(common, values.std(axis=0).tolist())
+        xs, mean = _downsample(grid.tolist(), values.mean(axis=0).tolist())
+        _, std = _downsample(grid.tolist(), values.std(axis=0).tolist())
         bands.append({"name": f"lr={lr} 均值 ± std（{len(curves)} 个种子）", "lr": lr, "x": xs, "y": mean,
                       "lo": [m - s for m, s in zip(mean, std)], "hi": [m + s for m, s in zip(mean, std)]})
     return {"type": "training", "series": series, "bands": bands, "ylabel": "team_return（episode 总成本，取负）"}
@@ -462,6 +469,7 @@ class App:
                       for t, envs in continual_mod.TASKS.items()],
             "colors": ENV_COLORS, "xlim": XLIM, "ylim": YLIM,
             "schemas": {kind: parser_schema(c["parser"]()) for kind, c in COMMANDS.items()},
+            "algorithms": [{"kind": k, "label": label} for k, label in ALGORITHMS.items()],
         }
 
     def preview(self, body):
