@@ -2,7 +2,7 @@
 """
 Reward curves of a continual learning run from its TensorBoard logs, in the style of
 dcontinustoPPO2_2.png: mean episode return against the environment steps (cumulated over the phases),
-one segment per phase, coloured by environment.
+one segment per phase, coloured by environment (COLORS), both axes in scientific notation.
 
 The continual learning script writes one scalar per phase, "phase<i>_<env>/episode_return_mean"
 (e.g. phase01_Sto1/episode_return_mean), with the cumulated environment steps as step.
@@ -20,9 +20,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 TAG = re.compile(r"^phase(\d+)_(\w+)/episode_return_mean$")
-# one colour per environment, the same in every figure
-COLORS = {"Sto1": "#5DADE2", "Sto01": "#48C9B0", "Sto0": "#F5B041",
-          "Bat10": "#AF7AC5", "Bat7": "#EC7063", "Bat3": "#58D68D"}
+# one colour per environment, the same in every figure of the project (as ENV_COLORS in bat/plot_tb.py, sto/plot_tb.py)
+COLORS = {"Bat10": "darkgoldenrod", "Bat7": "goldenrod", "Bat3": "gold",
+          "Sto0": "dodgerblue", "Sto01": "lightskyblue", "Sto1": "skyblue"}
 
 
 def read_phases(tb_dir):
@@ -53,6 +53,8 @@ def plot_continual(tb_dir, out, title="Continuous agent reward curves for PPO"):
     ax.set_title(title)
     ax.set_xlabel("Step")
     ax.set_ylabel("Reward history")
+    # both axes in scientific notation, as the single-environment figures
+    ax.ticklabel_format(axis="both", style="sci", scilimits=(0, 0), useMathText=True)
     ax.legend(loc="upper left")
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
