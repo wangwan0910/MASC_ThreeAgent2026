@@ -26,3 +26,18 @@ __pycache__/
 .vscode/
 .idea/
 .claude/
+
+# ----- packaging / tests -----
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# ----- run directories (outputs of masc-train / masc-continual / SLURM jobs) -----
+runs/
+# result directories of the scripts before the masc package (old logs, figures, CSV files)
+/bat/
+/sto/
+/batsto/
+analysis_logs/
+.venv*/

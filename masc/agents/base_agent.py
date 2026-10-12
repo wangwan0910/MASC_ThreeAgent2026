@@ -2,7 +2,7 @@
 """
 BaseAgent: template for one stage (agent) of the serial supply chain.
 
-The environment (AssembyBat.POSingAgent1W1F) holds an ordered list of agents, from the most
+The environment (masc.envs.base.POSingAgent1W1F) holds an ordered list of agents, from the most
 upstream stage to the most downstream stage, e.g. [Factory, Warehouse, Retailer].
 The supplier of agent k is agent k-1; agent 0 is supplied by an unlimited external supplier.
 
@@ -12,7 +12,7 @@ Each agent is one column of the environment state / action matrices:
 
 How to add a new agent
 ----------------------
-1. Create a new file in supply_agents/, e.g. distributor.py:
+1. Create a new file in masc/agents/, e.g. distributor.py:
 
        from .base_agent import BaseAgent
 
@@ -23,7 +23,7 @@ How to add a new agent
            fixed_service_time = 2          # service time it gives to its downstream stage
            action_nvec = (3, 20, 1)        # serviceTime, orderToSupplier, reorderPoint
 
-2. Export it in supply_agents/__init__.py.
+2. Export it in masc/agents/__init__.py.
 3. Put it into the chain in the environment's make_agents(), e.g.
        return [Factory(), Warehouse(), Distributor(), Retailer()]
    Observation space, action space, reward, CSV columns and plots follow the agent list automatically.

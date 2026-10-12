@@ -1,20 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-Continual learning with multi-agent PPO (Ray RLlib) between the batch demand environments of this
-directory (AssembyBat: batch size 3 / 7 / 10).
+Continual learning with multi-agent PPO (Ray RLlib) between the supply chain environments (masc-continual).
 Every phase starts from the policies of the previous phase; the sequence of a task is repeated --rounds times.
 
-Tasks (--task):
-    3-7-10 : batch size 3 -> 7 -> 10
-    10-7-3 : batch size 10 -> 7 -> 3
+Tasks (--task), default number of rounds and directory of the models (under --out-dir):
+    0-01-1     : std 0 -> 0.1 -> 1           3 rounds   PPOcon-sto_models/
+    1-01-0     : std 1 -> 0.1 -> 0           3 rounds   PPOcon-sto_models/
+    3-7-10     : batch size 3 -> 7 -> 10     3 rounds   PPOcon-bat_models/
+    10-7-3     : batch size 10 -> 7 -> 3     3 rounds   PPOcon-bat_models/
+    bat10-sto1 : batch 10 -> std 1           5 rounds   PPOconbat-sto_models/
+    sto1-bat10 : std 1 -> batch 10           5 rounds   PPOconbat-sto_models/
 
-    python continual_learning/continual_bat.py                                   # task 10-7-3, lr 0.0003
-    python continual_learning/continual_bat.py --task 3-7-10 --rounds 1
-    python continual_learning/continual_bat.py --lr 0.001 0.0003 0.0001          # grid search, one lr after another
+    masc-continual --task 10-7-3                                   # lr 0.0003
+    masc-continual --task 3-7-10 --rounds 1
+    masc-continual --task sto1-bat10 --lr 0.001 0.0003 0.0001      # grid search, one lr after another
 
 The training curve (mean episode return per iteration, cumulated environment steps) is written to TensorBoard,
 <models_dir>/tb/, one scalar per phase, and plotted at the end of the task (one figure per learning rate, in the
-style of dcontinustoPPO2_2.png): continual_learning/PPOcon_<task>_r<rounds>_lr<lr>_<date-time>.png (a copy stays in
+style of assets/dcontinustoPPO2_2.png): <out-dir>/PPOcon_<task>_r<rounds>_lr<lr>_<date-time>.png (a copy stays in
 <models_dir>); a new run never overwrites an older figure. The test reward of every phase is printed (no CSV file
 is written by the continual learning for now).
 
@@ -41,11 +44,8 @@ import sys
 import numpy as np
 from ray.rllib.core import COMPONENT_LEARNER, COMPONENT_LEARNER_GROUP, COMPONENT_RL_MODULE
 
-# marl_env.py is in the parent directory of this script, plot_continual.py next to it
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from marl_env import ENV_SHORT_NAMES, build_ppo_config, evaluate, init_ray
-from plot_continual import plot_continual
+from .marl_env import ENV_SHORT_NAMES, build_ppo_config, evaluate, init_ray
+from .plotting import plot_continual
 
 
 OBS_ROWS = 9
@@ -53,22 +53,27 @@ LRS = [3e-4]
 TIMESTEPS_PER_PHASE = 200000
 NUM_ENV_RUNNERS = 1
 NUM_GPUS = 0
-ROUNDS = 3
 
-# continual learning tasks: order of the environments, repeated ROUNDS times
-# BatSupplyEnv-v1 = batch 10, BatSupplyEnv-v2 = batch 7, BatSupplyEnv-v3 = batch 3 (see marl_env.ENV_IDS)
+# continual learning tasks: order of the environments (see marl_env.ENV_IDS), default number of rounds (the order is
+# repeated this many times) and directory of the models
+# StoSupplyEnv-v1 = std 0 (demand always 2), StoSupplyEnv-v2 = std 0.1, StoSupplyEnv-v3 = std 1
+# BatSupplyEnv-v1 = batch 10, BatSupplyEnv-v2 = batch 7, BatSupplyEnv-v3 = batch 3
 TASKS = {
+    "0-01-1": ["StoSupplyEnv-v1", "StoSupplyEnv-v2", "StoSupplyEnv-v3"],   # std 0 -> 0.1 -> 1
+    "1-01-0": ["StoSupplyEnv-v3", "StoSupplyEnv-v2", "StoSupplyEnv-v1"],   # std 1 -> 0.1 -> 0
     "3-7-10": ["BatSupplyEnv-v3", "BatSupplyEnv-v2", "BatSupplyEnv-v1"],   # batch 3 -> 7 -> 10
     "10-7-3": ["BatSupplyEnv-v1", "BatSupplyEnv-v2", "BatSupplyEnv-v3"],   # batch 10 -> 7 -> 3
+    "bat10-sto1": ["BatSupplyEnv-v1", "StoSupplyEnv-v3"],                  # batch 10 -> std 1
+    "sto1-bat10": ["StoSupplyEnv-v3", "BatSupplyEnv-v1"],                  # std 1 -> batch 10
 }
-DEFAULT_TASK = "10-7-3"
-
-FIG_DIR = os.path.dirname(os.path.abspath(__file__))
-MODELS_DIR = "PPOcon-bat_models"
+ROUNDS = {"0-01-1": 3, "1-01-0": 3, "3-7-10": 3, "10-7-3": 3, "bat10-sto1": 5, "sto1-bat10": 5}
+MODELS_DIRS = {"0-01-1": "PPOcon-sto_models", "1-01-0": "PPOcon-sto_models",
+               "3-7-10": "PPOcon-bat_models", "10-7-3": "PPOcon-bat_models",
+               "bat10-sto1": "PPOconbat-sto_models", "sto1-bat10": "PPOconbat-sto_models"}
 RL_MODULE_PATH = os.path.join(COMPONENT_LEARNER_GROUP, COMPONENT_LEARNER, COMPONENT_RL_MODULE)
 
 
-def make_phases(task, rounds=ROUNDS):
+def make_phases(task, rounds):
     """[(phase name, env id)], e.g. [("round1_Sto0", "StoSupplyEnv-v1"), ...]"""
     return [(f"round{r}_{ENV_SHORT_NAMES[env_id]}", env_id) for r in range(1, rounds + 1) for env_id in TASKS[task]]
 
@@ -188,10 +193,14 @@ def run_phases(lr, models_dir, phases, timesteps_per_phase=TIMESTEPS_PER_PHASE, 
     return test_rewards, verdict
 
 
-def main():
+def main(argv=None):
+    """masc-continual: exit code 1 if the task was stopped for every learning rate."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", default=DEFAULT_TASK, choices=sorted(TASKS), help="order of the environments")
-    parser.add_argument("--rounds", type=int, default=ROUNDS, help="the order of the task is repeated this many times")
+    parser.add_argument("--task", required=True, choices=sorted(TASKS), help="order of the environments")
+    parser.add_argument("--rounds", type=int, default=None,
+                        help="the order of the task is repeated this many times (default: 3, 5 for bat10-sto1 / "
+                             "sto1-bat10)")
+    parser.add_argument("--out-dir", default=".", help="directory of the models and figures (default: current)")
     parser.add_argument("--lr", type=float, nargs="+", default=LRS, help="learning rate(s); several -> grid search")
     parser.add_argument("--timesteps-per-phase", type=int, default=TIMESTEPS_PER_PHASE, help="decisions per phase")
     parser.add_argument("--num-env-runners", type=int, default=NUM_ENV_RUNNERS, help="parallel sampling workers")
@@ -205,14 +214,16 @@ def main():
                         help="no learning: the first phase must improve by this fraction")
     parser.add_argument("--no-learning-steps", type=int, default=400000,
                         help="no learning: checked after this many steps of the first phase (at most the phase length)")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.rounds is None:
+        args.rounds = ROUNDS[args.task]
 
     phases = make_phases(args.task, args.rounds)
     print(f"task {args.task}, {args.rounds} round(s):", " -> ".join(name for name, _ in phases))
 
     # Set up directories for saving models and logs.
     stamp = f"{datetime.datetime.now():%Y%m%d-%H%M%S}"
-    models_dir = os.path.abspath(os.path.join(MODELS_DIR, args.task, stamp))
+    models_dir = os.path.abspath(os.path.join(args.out_dir, MODELS_DIRS[args.task], args.task, stamp))
     os.makedirs(models_dir, exist_ok=True)
 
     init_ray()
@@ -232,7 +243,7 @@ def main():
         print(f"lr={lr} test rewards:", results[lr])
         # reward curves of the task, e.g. PPOcon_10-7-3_r3_lr0.003_20261011-170501.png
         stopped = f"_STOPPED-{verdict['status']}" if verdict else ""
-        fig = unique_path(os.path.join(FIG_DIR, f"PPOcon_{args.task}_r{args.rounds}_lr{lr:g}_{stamp}{stopped}.png"))
+        fig = unique_path(os.path.join(args.out_dir, f"PPOcon_{args.task}_r{args.rounds}_lr{lr:g}_{stamp}{stopped}.png"))
         title = f"Continuous agent reward curves for PPO ({args.task}, lr {lr:g})"
         if verdict:
             title += f"\nSTOPPED in phase {verdict['phase']} ({verdict['phase_name']}): {verdict['status']}"

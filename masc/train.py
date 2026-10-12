@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Multi-agent PPO (Ray RLlib) on the batch demand supply chain environment.
+Multi-agent PPO (Ray RLlib) on one supply chain environment (stochastic or batch demand, see marl_env.ENV_IDS).
 Every stage (factory, warehouse, retailer) is an agent with its own PPO policy, see marl_env.py.
+Command: masc-train (or python -m masc.train). Logs, figures and CSV files are written under --out-dir (default: the
+current directory).
 
 The reward curve of every trial is checked during the training (TrainingMonitor):
     converged  : the return has stayed stable (two consecutive windows of --conv-window iterations within
@@ -16,11 +18,11 @@ The reward curve of every trial is checked during the training (TrainingMonitor)
                  are still computed, and the first step at which each one would have stopped the trial is saved in
                  training_status.json ("would_stop"), to check the stopping rules on complete training curves
 Only a converged (or completed) trial is plotted, from the TensorBoard logs: PPO_<env>.png in this directory
-(e.g. PPO_Bat10.png), see plot_tb.py.
+(e.g. PPO_Bat10.png), see masc/plotting.py.
 If no trial converged, no PPO_<env>.png is written (a diagnostic figure <name>_NOT_CONVERGED.png goes to the log
 directory instead) and the script exits with code 1. The status of every trial is saved in training_status.json.
 
-CSV data (only for a converged trial, never for the continual learning scripts), in csv_results/ (--csv-dir):
+CSV data (only for a converged trial, never for the continual learning scripts), in <out-dir>/csv_results/ (--csv-dir):
     <tag>_curve.csv       : training curve of the figure (step, team return, smoothed team return)
     <tag>_trajectory.csv  : one deterministic episode of the trained policies (state, action, demand and cost of every
                             day, save_to_csv of the environment), demand seed --csv-seed
@@ -28,9 +30,9 @@ CSV data (only for a converged trial, never for the continual learning scripts),
     e.g. PPO_Sto1_mu2-std1_lr0.0003_mlp64x64_1.65Msteps_20261011-170501. A new run never overwrites an older file
     (date-time in the name, and a _2, _3 ... suffix if the name already exists).
 
-    python main_ppo.py --env BatSupplyEnv-v1             # batch 10 -> PPO_Bat10.png, lr 0.0003
-    python main_ppo.py --env BatSupplyEnv-v3 --num-env-runners 4
-    python main_ppo.py --lr 0.001 0.0003 0.0001          # grid search over the learning rate (one Tune trial per lr)
+    masc-train --env BatSupplyEnv-v1 --no-stockout-termination        # batch 10 -> PPO_Bat10.png
+    masc-train --env StoSupplyEnv-v3 --lr 0.0003 0.0001                 # grid search over the learning rate
+    masc-train --env StoSupplyEnv-v3 --seeds 0 1 2 3 4 --num-env-runners 2   # 5 seeds, mean +- std figure
     tensorboard --logdir tu_logs                         # watch the training
 """
 
@@ -48,17 +50,18 @@ from collections import defaultdict
 import numpy as np
 from ray import tune
 
-from marl_env import DEFAULT_REWARD_SCALE, ENV_SHORT_NAMES, REWARD_MODES, SupplyChainMARLEnv, build_ppo_config, init_ray
-from plot_tb import plot_run, plot_seeds, select_trial, smooth
+from .marl_env import (DEFAULT_REWARD_SCALE, ENV_SHORT_NAMES, REWARD_MODES, SupplyChainMARLEnv,
+                       build_ppo_config, init_ray)
+from .plotting import plot_run, plot_seeds, select_trial, smooth
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 PLOTTED = ("converged", "completed")   # verdicts of the trials whose figure / CSV are written
 
 
-def parse_args(default_name="PPO", default_dir="tu"):
+def parse_args(default_name="PPO", default_dir="tu", argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--env", default="BatSupplyEnv-v1",
-                        help="environment id (see marl_env.ENV_IDS) or 'module:Class'")
+    parser.add_argument("--env", required=True,
+                        help="environment id (" + ", ".join(f"{k} = {v}" for k, v in ENV_SHORT_NAMES.items())
+                             + ") or 'module:Class'")
     parser.add_argument("--reward-scale", type=float, default=DEFAULT_REWARD_SCALE,
                         help="rewards are multiplied by this factor (costs are 1e4 - 1e6 per episode)")
     parser.add_argument("--reward-mode", default="team", choices=sorted(REWARD_MODES),
@@ -77,7 +80,7 @@ def parse_args(default_name="PPO", default_dir="tu"):
                         help="learning rate; several values -> grid search")
     parser.add_argument("--seeds", type=int, nargs="+", default=None,
                         help="random seeds (networks and demand); several values -> one trial per seed, the figure "
-                             "shows the mean of the seeds and +- std (plot_tb.plot_seeds). Default: no fixed seed")
+                             "shows the mean of the seeds and +- std (plotting.plot_seeds). Default: no fixed seed")
     # 3000 iterations x 3000 timesteps as in the stable-baselines3 version; one timestep is now one decision (reorder day)
     parser.add_argument("--total-timesteps", type=int, default=3000 * 3000)
     parser.add_argument("--time-budget-hours", type=float, default=25.0,
@@ -108,7 +111,9 @@ def parse_args(default_name="PPO", default_dir="tu"):
                         help="clip of the value function squared error (inf: no clipping), see build_ppo_config")
     parser.add_argument("--factory-clip", type=float, default=None,
                         help="PPO clip parameter of the factory policy (default: the common 0.2)")
-    parser.add_argument("--csv-dir", default=os.path.join(HERE, "csv_results"),
+    parser.add_argument("--out-dir", default=".",
+                        help="directory of the logs (<dir>_logs/), figures and CSV files (default: current directory)")
+    parser.add_argument("--csv-dir", default=None,
                         help="CSV data of converged trials (training curve, trajectory of one episode)")
     parser.add_argument("--csv-seed", type=int, default=0, help="demand seed of the episode saved as trajectory CSV")
     parser.add_argument("--checkpoint-freq", type=int, default=50, help="checkpoint every n training iterations")
@@ -116,7 +121,10 @@ def parse_args(default_name="PPO", default_dir="tu"):
     parser.add_argument("--num-gpus", type=float, default=0, help="GPUs for the learner, e.g. 1 on the cluster")
     parser.add_argument("--name", default=default_name)
     parser.add_argument("--dir", default=default_dir, help="results go to <dir>_logs/<env>/<time>/")
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.csv_dir is None:
+        args.csv_dir = os.path.join(args.out_dir, "csv_results")
+    return args
 
 
 def env_config_from_args(args):
@@ -318,7 +326,7 @@ def rollout_episode(checkpoint, env_config, seed=0):
 
 def save_csv(args, logdir, best, algo, net, seed_curve=None):
     """CSV data of the converged trial `best`: training curve and the trajectory of one episode, see the docstring.
-    seed_curve: (steps, mean, std, seeds, lr) of plot_tb.plot_seeds: the curve CSV holds the mean and the std of the
+    seed_curve: (steps, mean, std, seeds, lr) of plotting.plot_seeds: the curve CSV holds the mean and the std of the
     seeds instead of the curve of `best` (the trajectory is the one of `best`, the best seed)."""
     env_config = env_config_from_args(args)
     steps_m = f"{best['steps'] / 1e6:.2f}".rstrip("0").rstrip(".")
@@ -330,7 +338,7 @@ def save_csv(args, logdir, best, algo, net, seed_curve=None):
     curve = unique_path(os.path.join(args.csv_dir, f"{tag}_curve.csv"))
     with open(curve, "x", newline="") as f:
         writer = csv.writer(f)
-        # team return: minus the total cost of the supply chain, original cost units (plot_tb.RETURN_TAGS)
+        # team return: minus the total cost of the supply chain, original cost units (plotting.RETURN_TAGS)
         if seed_curve:
             steps, mean, std, seed_list, _ = seed_curve
             writer.writerow(["step", "team_return_mean", "team_return_std", "n_seeds"])
@@ -350,7 +358,8 @@ def save_csv(args, logdir, best, algo, net, seed_curve=None):
 
 def train(args, config, algo="PPO", net="mlp64x64"):
     # tensorboard logs and checkpoints are saved to this directory
-    logdir = os.path.abspath(f"{args.dir}_logs/{env_short_name(args.env)}/{int(time.time())}/")
+    logdir = os.path.abspath(os.path.join(args.out_dir, f"{args.dir}_logs", env_short_name(args.env),
+                                          str(int(time.time()))))
     os.makedirs(logdir, exist_ok=True)
     stopper = TrainingMonitor(args.conv_window, args.conv_tol, args.conv_patience, args.min_timesteps,
                               args.total_timesteps, args.time_budget_hours * 3600, min_gain=args.min_gain,
@@ -402,7 +411,7 @@ def train(args, config, algo="PPO", net="mlp64x64"):
 
     # training curve, e.g. PPO_Sto1.png in this directory (a copy stays in the log directory):
     # one seed: the best converged trial; several seeds: mean +- std of all the seeds of the best learning rate
-    out = os.path.join(HERE, f"{name}.png")
+    out = os.path.join(args.out_dir, f"{name}.png")
     seed_curve = None
     if len({s["seed"] for s in status}) > 1:
         def mean_return(lr):
@@ -418,10 +427,15 @@ def train(args, config, algo="PPO", net="mlp64x64"):
     save_csv(args, logdir, best, algo, net, seed_curve=seed_curve)
     return results, status
 
-if __name__ == '__main__':
-    args = parse_args(default_name="PPO_pi=[64,64]_vf=[64,64]", default_dir="tu")
+def main(argv=None):
+    """masc-train: exit code 0 if a trial converged (or completed with --no-early-stop), else 1."""
+    args = parse_args(default_name="PPO_pi=[64,64]_vf=[64,64]", default_dir="tu", argv=argv)
     args.num_env_runners = fit_env_runners(args.num_env_runners)
     config = build_ppo_config(env_config_from_args(args), lr=lr_search_space(args.lr), hiddens=(64, 64),
                               num_env_runners=args.num_env_runners, num_gpus=args.num_gpus, **ppo_kwargs(args))
     _, status = train(args, config, algo="PPO")
-    sys.exit(0 if any(s["status"] in PLOTTED for s in status) else 1)
+    return 0 if any(s["status"] in PLOTTED for s in status) else 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

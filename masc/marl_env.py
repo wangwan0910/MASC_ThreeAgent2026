@@ -1,10 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Multi-agent (Ray RLlib) wrapper of the serial supply chain environments, for continual learning between the
-stochastic environments (../sto) and the batch environments (../bat). This is the only directory that uses both;
-sto/ and bat/ have their own marl_env.py and run independently.
+Multi-agent (Ray RLlib) wrapper of the serial supply chain environments.
 
-The single-planner environments (../sto/AssembySto.Stocha_P*, ../bat/AssembyBat.Batch_L*) keep the state as a
+The single-planner environments (masc.envs: Stocha_P*, Batch_L*) keep the state as a
 (n_rows, n_stage) matrix and the action as a (3, n_stage) matrix, one column per stage.
 SupplyChainMARLEnv splits these matrices by column: every stage (factory, warehouse, retailer) is one
 RLlib agent (heterogeneous agents, independent PPO), with its own
@@ -22,7 +20,8 @@ gamma therefore discounts per decision, not per day.
 
 env_config keys
 ---------------
-env_class    : "module:Class" of the wrapped single-planner environment, default "AssembySto:Stocha_P1"
+env_class    : environment id of ENV_IDS (e.g. "StoSupplyEnv-v3") or "module:Class" of the wrapped single-planner
+               environment, default "StoSupplyEnv-v3"
 env_kwargs   : kwargs passed to the environment class
 reward_scale : rewards are multiplied by this factor, default DEFAULT_REWARD_SCALE = 1e-4 (the costs are in the
                order of 1e4 - 1e6 per episode; unscaled, the value function cannot fit the returns)
@@ -38,12 +37,11 @@ max_stockout_days : the episode terminates after this many days with a retailer 
                only costs (no early way out of the episode, see the smoke tests of 2026-10-12)
 obs_rows     : pad the state matrix with zero rows up to this number of rows, so that environments with
                different state sizes give the same observation space and a trained policy can be transferred
-               between them (AssembySto and AssembyBat both have 9 rows)
+               between them (continual learning)
 """
 
 import importlib
 import os
-import sys
 
 import numpy as np
 from gymnasium.spaces import Box, MultiDiscrete
@@ -51,52 +49,36 @@ from ray.rllib.env.multi_agent_env import MultiAgentEnv
 from ray.tune.registry import register_env
 
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-STO_DIR = os.path.join(os.path.dirname(HERE), "sto")
-BAT_DIR = os.path.join(os.path.dirname(HERE), "bat")
+# directory that contains the masc package, put on the PYTHONPATH of the Ray workers (needed only when masc is not
+# installed, e.g. run from a source checkout)
+PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV_NAME = "SupplyChainMARL"
 DEFAULT_REWARD_SCALE = 1e-4
 REWARD_MODES = {"individual": 0.0, "team": 1.0, "mixed": None}   # weight of the total cost (mixed: team_weight)
 DEFAULT_AGENT_NAMES = ["factory", "warehouse", "retailer"]
 
-# environment ids used by the original stable-baselines3 scripts
+# environment ids (as in the original stable-baselines3 scripts)
 ENV_IDS = {
-    "StoSupplyEnv-v1": "AssembySto:Stocha_P0",     # demand always 2 (std 0)
-    "StoSupplyEnv-v2": "AssembySto:Stocha_P01",   # std 0.1
-    "StoSupplyEnv-v3": "AssembySto:Stocha_P1",     # std 1
-    "BatSupplyEnv-v1": "AssembyBat:Batch_L10",     # batch size 10
-    "BatSupplyEnv-v2": "AssembyBat:Batch_L7",      # batch size 7
-    "BatSupplyEnv-v3": "AssembyBat:Batch_L3",      # batch size 3
+    "StoSupplyEnv-v1": "masc.envs.stochastic:Stocha_P0",    # demand always 2 (std 0)
+    "StoSupplyEnv-v2": "masc.envs.stochastic:Stocha_P01",   # std 0.1
+    "StoSupplyEnv-v3": "masc.envs.stochastic:Stocha_P1",    # std 1
+    "BatSupplyEnv-v1": "masc.envs.batch:Batch_L10",         # batch size 10
+    "BatSupplyEnv-v2": "masc.envs.batch:Batch_L7",          # batch size 7
+    "BatSupplyEnv-v3": "masc.envs.batch:Batch_L3",          # batch size 3
 }
-# short names used in the figure names and legends
+# short names used in the figure names, legends and log directories, e.g. PPO_Sto1.png, "PPO in Sto1"
 ENV_SHORT_NAMES = {"StoSupplyEnv-v1": "Sto0", "StoSupplyEnv-v2": "Sto01", "StoSupplyEnv-v3": "Sto1",
                    "BatSupplyEnv-v1": "Bat10", "BatSupplyEnv-v2": "Bat7", "BatSupplyEnv-v3": "Bat3"}
-# directory of each environment module; sto/ and bat/ each have their own supply_agents/ and demand.py
-ENV_DIRS = {"AssembySto": STO_DIR, "AssembyBat": BAT_DIR}
-LOCAL_MODULES = ("supply_agents", "demand")
-
-
-def _import_env_module(module_name):
-    """Import an environment module with the supply_agents / demand of its own directory.
-    sto/ and bat/ use the same module names, so the cached ones of the other directory are dropped first;
-    the environment module keeps references to the classes it imported."""
-    if module_name in sys.modules:
-        return sys.modules[module_name]
-    env_dir = ENV_DIRS[module_name]
-    for m in [m for m in sys.modules if m.split(".")[0] in LOCAL_MODULES]:
-        del sys.modules[m]
-    sys.path.insert(0, env_dir)
-    try:
-        return importlib.import_module(module_name)
-    finally:
-        sys.path.remove(env_dir)
+# module names of the scripts before the masc package ("AssembySto:Stocha_P1" in older configs and logs)
+LEGACY_MODULES = {"AssembySto": "masc.envs.stochastic", "AssembyBat": "masc.envs.batch"}
 
 
 def resolve_env_class(name):
-    """'module:Class' or one of the ids in ENV_IDS -> environment class."""
+    """One of the ids in ENV_IDS, or 'module:Class' (old module names AssembySto / AssembyBat accepted)
+    -> environment class."""
     name = ENV_IDS.get(name, name)
     module_name, class_name = name.split(":")
-    return getattr(_import_env_module(module_name), class_name)
+    return getattr(importlib.import_module(LEGACY_MODULES.get(module_name, module_name)), class_name)
 
 
 class SupplyChainMARLEnv(MultiAgentEnv):
@@ -104,7 +86,7 @@ class SupplyChainMARLEnv(MultiAgentEnv):
     def __init__(self, config=None):
         super().__init__()
         config = dict(config or {})
-        self.env = resolve_env_class(config.get("env_class", "AssembySto:Stocha_P1"))(**config.get("env_kwargs", {}))
+        self.env = resolve_env_class(config.get("env_class", "StoSupplyEnv-v3"))(**config.get("env_kwargs", {}))
         self.reward_scale = config.get("reward_scale", DEFAULT_REWARD_SCALE)
         self.reward_mode = config.get("reward_mode", "team")
         self.team_weight = team_weight(config)
@@ -262,8 +244,7 @@ def team_return_callback(env_config):
 
 
 def init_ray(**kwargs):
-    """ray.init with this directory (marl_env) on the PYTHONPATH of all Ray workers (the environments are
-    imported from ../sto and ../bat by marl_env).
+    """ray.init with the directory of the masc package on the PYTHONPATH of all Ray workers (when masc is not installed).
     On SLURM, Ray uses the CPUs allocated to the job (--cpus-per-task), not all the CPUs of the node, and every job
     has its own Ray instance."""
     import ray
@@ -277,7 +258,7 @@ def init_ray(**kwargs):
         # Ray's default object store is ~30% of the node memory, per instance: with many jobs on one node (11 jobs on
         # red6066, 2026-10-12) the Ray instances failed to start. The training needs little object store memory
         kwargs.setdefault("object_store_memory", 2 * 1024 ** 3)
-    pythonpath = os.pathsep.join([HERE, os.environ.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    pythonpath = os.pathsep.join([PACKAGE_ROOT, os.environ.get("PYTHONPATH", "")]).rstrip(os.pathsep)
     ray.init(runtime_env={"env_vars": {"PYTHONPATH": pythonpath}}, ignore_reinit_error=True, **kwargs)
 
 
@@ -350,10 +331,10 @@ def evaluate(algo, env_config, n_steps=1000):
     return float(np.mean(returns)) if returns else ep_return
 
 
-if __name__ == '__main__':
-    # random actions, just to check that the multi-agent environment runs through episodes
-    for env_class in ENV_IDS.values():
-        env = SupplyChainMARLEnv({"env_class": env_class})
+def main():
+    """masc-check: random actions, just to check that every multi-agent environment runs through episodes."""
+    for env_id in ENV_IDS:
+        env = SupplyChainMARLEnv({"env_class": env_id})
         obs, _ = env.reset(seed=0)
         done, decisions = False, 0
         while not done:
@@ -362,4 +343,8 @@ if __name__ == '__main__':
             obs, rew, term, trunc, info = env.step(actions)
             assert all(env.observation_spaces[aid].contains(o) for aid, o in obs.items())
             done = term["__all__"] or trunc["__all__"]
-        print(env_class, "ok, days:", env.env.day, "decisions:", decisions)
+        print(f"{env_id} ({ENV_SHORT_NAMES[env_id]}) ok, days: {env.env.day}, decisions: {decisions}")
+
+
+if __name__ == '__main__':
+    main()

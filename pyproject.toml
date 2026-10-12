@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "masc"
+version = "0.1.0"
+description = "Multi-agent reinforcement learning (Ray RLlib PPO) for a serial three-stage supply chain"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+authors = [{ name = "Wang Wan" }]
+# Versions tested on Iridis 6 (requirements.txt pins them exactly; install it first to get the CPU build of torch)
+dependencies = [
+    "ray[rllib,tune]==2.49.2",
+    "torch>=2.2,<2.3",
+    "gymnasium>=1.1,<1.2",
+    "numpy>=1.26,<2",
+    "matplotlib>=3.7",
+    "tensorboard>=2.14",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "pyarrow>=14",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+masc-train = "masc.train:main"
+masc-train-rppo = "masc.train_rppo:main"
+masc-continual = "masc.continual:main"
+masc-plot = "masc.plotting:main"
+masc-plot-continual = "masc.plotting:main_continual"
+masc-check = "masc.marl_env:main"
+
+[tool.setuptools.packages.find]
+include = ["masc*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Training curve from the TensorBoard logs of a run (main_ppo.py / main_rppo.py), in the style of PPO_demo.png:
+Figures of the masc package (masc-plot, masc-plot-continual).
+
+Training curve from the TensorBoard logs of a run (masc-train / masc-train-rppo), in the style of
+assets/PPO_demo.png:
 episode return of the supply chain against the environment steps, raw curve (light) and smoothed curve (dark,
 TensorBoard smoothing).
 
@@ -16,14 +19,19 @@ algorithms, so that the figures can be compared side by side.
     YLIM: -2e6 - 0, the episode returns of the smoke tests without stockout termination go from -1.7e6 (first
           iteration, random policies) to -6e4
 
-    python plot_tb.py tu_logs/Bat10/1791700000 --label "PPO in Bat10" --out PPO_Bat10.png
-    python plot_tb.py tu_logs/Bat10/1791700000 --lr 0.0003 --ylim -450000 -50000
+    masc-plot tu_logs/Bat10/1791700000 --label "PPO in Bat10" --out PPO_Bat10.png
+    masc-plot tu_logs/Bat10/1791700000 --lr 0.0003 --ylim -450000 -50000
 
 If the run is a learning-rate grid search, the best trial (highest return at the end) is plotted, or the one of --lr.
 Several seeds (--seeds): all the trials (seeds) of one learning rate in one figure, mean of the seeds (line) and
 mean +- standard deviation (light band), in the style of PPO_demo.png:
 
-    python plot_tb.py tu_team_logs/Bat10/1791700000 --seeds --label "PPO in Bat10" --out PPO_Bat10.png
+    masc-plot tu_team_logs/Bat10/1791700000 --seeds --label "PPO in Bat10" --out PPO_Bat10.png
+
+Continual learning (masc-continual): reward curves of all the phases of a task, one colour per environment, in the
+style of assets/dcontinustoPPO2_2.png (plot_continual):
+
+    masc-plot-continual <models_dir>/lr=<lr>/tb --out PPOcon.png
 """
 
 import argparse
@@ -31,6 +39,7 @@ import glob
 import json
 import math
 import os
+import re
 
 import matplotlib
 matplotlib.use("Agg")
@@ -66,7 +75,7 @@ def sci_axes(ax):
 
 def find_trials(logdir):
     """Trial directories (containing TensorBoard event files) under logdir."""
-    files = glob.glob(os.path.join(logdir, "**", "events.out.tfevents.*"), recursive=True)
+    files = glob.glob(os.path.join(glob.escape(logdir), "**", "events.out.tfevents.*"), recursive=True)
     return sorted({os.path.dirname(f) for f in files})
 
 
@@ -218,7 +227,62 @@ def plot_run(logdir, label, out, lr=None, smoothing=0.6, xlim=XLIM, ylim=YLIM, e
     return out
 
 
-if __name__ == '__main__':
+TAG = re.compile(r"^phase(\d+)_(\w+)/episode_return_mean$")
+
+
+def read_phases(tb_dir):
+    """Phases of a continual learning run: [(phase number, env short name, steps, returns)] sorted by phase.
+    The continual learning writes one scalar per phase, "phase<i>_<env>/episode_return_mean"
+    (e.g. phase01_Sto1/episode_return_mean), with the cumulated environment steps as step."""
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+    if not glob.glob(os.path.join(glob.escape(tb_dir), "events.out.tfevents.*")):
+        raise FileNotFoundError(f"no TensorBoard logs in {tb_dir}")
+    acc = EventAccumulator(tb_dir, size_guidance={"scalars": 0})
+    acc.Reload()
+    phases = []
+    for tag in acc.Tags()["scalars"]:
+        m = TAG.match(tag)
+        if m:
+            events = acc.Scalars(tag)
+            phases.append((int(m.group(1)), m.group(2), [e.step for e in events], [e.value for e in events]))
+    if not phases:
+        raise KeyError(f"no 'phase<i>_<env>/episode_return_mean' scalar in {tb_dir}")
+    return sorted(phases)
+
+
+def plot_continual(tb_dir, out, title="Continuous agent reward curves for PPO"):
+    """Reward curves of a continual learning run: one segment per phase, coloured by environment (ENV_COLORS),
+    both axes in scientific notation."""
+    fig, ax = plt.subplots(figsize=(12, 4))
+    labelled = set()
+    for _, env, steps, returns in read_phases(tb_dir):
+        ax.plot(steps, returns, color=ENV_COLORS.get(env), linewidth=0.6,
+                label=None if env in labelled else env)
+        labelled.add(env)
+    ax.set_title(title)
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Reward history")
+    sci_axes(ax)
+    ax.legend(loc="upper left")
+    fig.savefig(out, bbox_inches="tight")
+    plt.close(fig)
+    print("figure", out)
+    return out
+
+
+def main_continual(argv=None):
+    """masc-plot-continual: reward curves of a continual learning run."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("tb_dir", help="TensorBoard directory of a continual learning run, e.g. <models_dir>/lr=<lr>/tb")
+    parser.add_argument("--out", default="PPOcon.png")
+    parser.add_argument("--title", default="Continuous agent reward curves for PPO")
+    a = parser.parse_args(argv)
+    plot_continual(a.tb_dir, a.out, a.title)
+    return 0
+
+
+def main(argv=None):
+    """masc-plot: training curve of a run (one trial, or mean +- std of the seeds with --seeds)."""
     parser = argparse.ArgumentParser()
     parser.add_argument("logdir", help="log directory of a run, e.g. tu_logs/Bat10/<time>")
     parser.add_argument("--label", default="PPO", help='legend, e.g. "PPO in Bat10"')
@@ -232,9 +296,14 @@ if __name__ == '__main__':
                         help="TensorBoard smoothing (default 0.6, with --seeds 0: raw curves)")
     parser.add_argument("--xlim", type=float, nargs=2, default=XLIM, help="default: common limits of all figures")
     parser.add_argument("--ylim", type=float, nargs=2, default=YLIM, help="default: common limits of all figures")
-    a = parser.parse_args()
+    a = parser.parse_args(argv)
     if a.seeds:
         plot_seeds(a.logdir, a.label, a.out, a.lr, a.xlim, a.ylim, env=a.env, smoothing=a.smoothing or 0.0)
     else:
         plot_run(a.logdir, a.label, a.out, a.lr, 0.6 if a.smoothing is None else a.smoothing, a.xlim, a.ylim,
                  env=a.env)
+    return 0
+
+
+if __name__ == '__main__':
+    main()

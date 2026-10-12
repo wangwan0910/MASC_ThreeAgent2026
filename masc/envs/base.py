@@ -4,15 +4,12 @@ Created on Sun Nov 16 09:33:41 2025
 
 @author: wangw
 
-Serial supply chain environment with batch demand. Same supply chain as the stochastic environment AssembySto.py
-(separate copy, nothing is imported from the sto directory); the only difference is the customer demand, generated in batches of batch_size identical
-values (demand.py). The agents (factory, warehouse, retailer) are defined in supply_agents/,
-one file per agent, all derived from the template supply_agents/base_agent.py.
-To add an agent, create a new agent there and add it to make_agents().
-The customer demand is part of the environment (demand.py), not an agent.
+Serial supply chain environment (single planner), shared by the stochastic demand environments
+(masc.envs.stochastic) and the batch demand environments (masc.envs.batch), which differ only in gen_demand().
+The agents (factory, warehouse, retailer) are defined in masc/agents/, one file per agent, all derived from the
+template masc/agents/base_agent.py. To add an agent, create a new agent there and add it to make_agents().
+The customer demand is part of the environment (masc/demand.py), not an agent.
 """
-
-
 
 from gymnasium.spaces import MultiDiscrete
 import datetime
@@ -24,8 +21,7 @@ from gymnasium.utils import seeding
 import matplotlib.pyplot as plt
 import logging
 
-from supply_agents import BaseAgent, Factory, Warehouse, Retailer
-from demand import DemandAgent
+from ..agents import BaseAgent, Factory, Warehouse, Retailer
 
 
 
@@ -57,14 +53,13 @@ ACTION_CSV_NAMES = {
 # POSingAgent1W1F is the environment class for the serial supply chain inventory management problem,
 # by default with one factory, one warehouse, and one retailer, controlled by a single planner (the RL policy).
 class POSingAgent1W1F:
+    # mean and standard deviation of the customer demand (normal distribution), see masc/demand.py
+    muDemand = 2
+    stdDemand = 1
 # The state is a (len(STATE_FIELDS), n_stage) matrix, one column per agent; the action is a (len(ACTION_FIELDS), n_stage) matrix.
-    def __init__(self, batch_size, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
 
-        self.muDemand = 2
-        self.stdDemand =  0.1
-        self.batch_size = batch_size
-        # batch demand generator, kept across days and episodes
-        self.customer = DemandAgent(self.muDemand, self.stdDemand, self.batch_size)
+        # demand parameters: class attributes muDemand / stdDemand, set by the subclasses
         self.T = 100
         # episode terminates after this many days with a retailer stockout
         self.max_stockout_days = 12
@@ -92,9 +87,9 @@ class POSingAgent1W1F:
     def make_agents(self):
         return [Factory(), Warehouse(), Retailer()]
 
-    # customer demand of one day: batch demand (the stochastic environment AssembySto.py differs only here)
+    # customer demand of one day: defined by the subclasses (stochastic: masc.envs.stochastic, batch: masc.envs.batch)
     def gen_demand(self):
-        return self.customer.genDemand()
+        raise NotImplementedError
 
     # supplier of each agent: the previous agent, None (unlimited external supplier) for the first one
     def supplier(self, k):
@@ -366,45 +361,3 @@ class POSingAgent1W1F:
                 filename = os.path.join(log_dir, f'Step{ep_count}_ep{self.re_num}_V{self.muDemand}T{self.stdDemand}_{current_date.strftime("%Y%m%d_%H%M%S")}.png')
                 plt.savefig(filename, bbox_inches='tight')
                 plt.close(fig)
-
-
-
-
-class POSAgent1W1F_V1T1(POSingAgent1W1F, gymnasium.Env):
-    def __init__(self, batch_size=10, *args, **kwargs):
-        super().__init__(batch_size, *args, **kwargs)
-
-
-# batch_size is set to 10.
-class Batch_L10(POSingAgent1W1F, gymnasium.Env):
-    def __init__(self, batch_size=10, *args, **kwargs):
-        super().__init__(batch_size, *args, **kwargs)
-
-
-# batch_size is set to 7.
-class Batch_L7(POSingAgent1W1F, gymnasium.Env):
-    def __init__(self, batch_size=7, *args, **kwargs):
-        super().__init__(batch_size, *args, **kwargs)
-
-
-# batch_size is set to 3.
-class Batch_L3(POSingAgent1W1F, gymnasium.Env):
-    def __init__(self, batch_size=3, *args, **kwargs):
-        super().__init__(batch_size, *args, **kwargs)
-
-
- # Instantiation and without agent interaction, just to check if the environment works and can run through one episode without error.
-if __name__ == '__main__':
-
-    env = Batch_L10()
-    episides = 1
-    for i in range(episides):
-        obs,_ = env.reset()
-        while True:
-            a=env.action_space.sample()
-            obs, rew, terminated, truncated, info = env.step(a)
-            done = terminated or truncated
-            if done :
-                break
-        assert done
-    print("ok, days:", env.day, "demand:", env.demand_history[:15])
