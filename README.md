@@ -1,208 +1,346 @@
-# MASC_ThreeAgent2026：三级供应链多智能体强化学习
+# MASC_ThreeAgent2026
 
-一个串行三级供应链（工厂 → 仓库 → 零售商）的库存管理问题：每一级是一个独立的智能体，用 Ray RLlib
-多智能体 PPO（每个智能体一个独立策略，不共享参数）训练。包括两类需求环境（随机需求 Sto、批量需求 Bat）上的
-单环境训练、多种子训练与制图，以及环境之间的连续学习（continual learning）。
+Multi-agent reinforcement learning for inventory management in a serial three-stage supply chain
+(**factory → warehouse → retailer**). Every stage is an independent agent with its own policy, trained with
+multi-agent **PPO** in [Ray RLlib](https://docs.ray.io/en/latest/rllib/) (new API stack). Two policy networks are
+compared: a feed-forward network (**PPO**) and a gated transformer (**Transformer PPO, TPPO**). The project covers
+single-environment learning with several random seeds, continual learning across environments, and a local web
+interface. Everything is one pip-installable Python package, `masc`.
 
-整个项目是一个可以用 pip 安装的 Python 包 `masc`：
-
-```bash
-pip install -r requirements.txt && pip install -e .
-masc-check                                                     # 6 个环境各跑一个随机 episode
-masc-train --env BatSupplyEnv-v1 --no-stockout-termination     # 单环境训练
-```
-
----
-
-## 目录
-
-1. [目录结构](#1-目录结构)
-2. [供应链环境](#2-供应链环境)
-3. [多智能体封装（masc.marl_env）](#3-多智能体封装mascmarl_env)
-4. [安装](#4-安装)
-5. [单环境训练（masc-train）](#5-单环境训练masc-train)
-6. [多种子训练与制图](#6-多种子训练与制图)
-7. [在 Iridis 集群上运行](#7-在-iridis-集群上运行)
-8. [连续学习](#8-连续学习)
-8a. [网页界面（masc-ui）](#8a-网页界面masc-ui)
-9. [输出文件](#9-输出文件)
-10. [制图规范](#10-制图规范)
-11. [设计决策与实验依据](#11-设计决策与实验依据)
-12. [扩展：增加一个智能体](#12-扩展增加一个智能体)
-13. [常见问题](#13-常见问题)
-
----
-
-## 1. 目录结构
+### Directory structure
 
 ```
 MASC_Code/
-├── pyproject.toml          包定义（pip install -e .）与命令行入口
-├── requirements.txt        精确版本的依赖（Python 3.10，CPU 版 PyTorch），见第 4 节
-├── masc/                   Python 包
-│   ├── agents/             供应链各级：base_agent.py（模板）、factory.py、warehouse.py、retailer.py
-│   ├── demand.py           客户需求：DemandGenerator（每天抽样）、DemandAgent（批量）
-│   ├── envs/               单规划者环境
-│   │   ├── base.py         共用的供应链（POSingAgent1W1F）
-│   │   ├── stochastic.py   随机需求：Stocha_P0 / Stocha_P01 / Stocha_P1
-│   │   └── batch.py        批量需求：Batch_L10 / Batch_L7 / Batch_L3
-│   ├── marl_env.py         多智能体封装、环境编号、PPO 配置（build_ppo_config）、Ray 初始化
-│   ├── train.py            单环境训练、训练监控、制图与 CSV          → masc-train
-│   ├── main_transformerPPO.py  同上，策略为门控 Transformer（GTrXL 式）  → masc-train-transformer
-│   ├── models/             可插拔的网络结构注册表：mlp、transformer（transformer.py）
-│   ├── trajectory.py       训练好的策略的轨迹 CSV（每个种子一个 100 天 episode）  → masc-trajectory
-│   ├── continual.py        环境之间的连续学习（6 个任务）              → masc-continual
-│   └── plotting.py         训练曲线（单 trial / 多种子均值±std）、连续学习曲线 → masc-plot / masc-plot-continual
-├── jobs/                   SLURM 作业脚本：job_train.sh（6 个环境）、job_continual.sh（6 个任务）
-├── tests/                  pytest 测试（不需要 Ray 集群）
-└── assets/                 参考图：PPO_demo.png、dcontinustoPPO2_2.png
+├── pyproject.toml              package definition (pip install -e .) and command-line entry points
+├── requirements.txt            exact dependency versions (Python 3.10, CPU build of PyTorch)
+├── masc/                       the Python package
+│   ├── agents/                 supply chain stages: base_agent.py (template), factory.py, warehouse.py, retailer.py
+│   ├── demand.py               customer demand: DemandGenerator (daily draw), DemandAgent (batch demand)
+│   ├── envs/                   single-planner environments
+│   │   ├── base.py             the shared supply chain (POSingAgent1W1F)
+│   │   ├── stochastic.py       stochastic demand: Stocha_P0 / Stocha_P01 / Stocha_P1
+│   │   └── batch.py            batch demand: Batch_L10 / Batch_L7 / Batch_L3
+│   ├── marl_env.py             multi-agent wrapper, environment ids, PPO config (build_ppo_config), Ray start-up
+│   ├── models/                 pluggable agent networks: mlp, transformer (transformer.py)
+│   ├── train.py                single-environment PPO, training monitor, figures, CSV    → masc-train
+│   ├── main_transformerPPO.py  the same with transformer policies                         → masc-train-transformer
+│   ├── trajectory.py           trajectory CSV of the trained policies, every seed           → masc-trajectory
+│   ├── continual.py            continual learning between environments (6 tasks)          → masc-continual
+│   ├── plotting.py             training curves, continual learning curves                 → masc-plot, masc-plot-continual
+│   └── ui/                     local web interface for a Mac (server.py, static/index.html) → masc-ui
+├── jobs/                       SLURM scripts: job_train.sh, job_continual.sh, job_continual_seeds.sh, job_continual_plot.sh
+├── tests/                      pytest suite (no Ray cluster needed)
+└── assets/                     figures of this README
 ```
 
-随机需求与批量需求环境共用同一个供应链（`envs/base.py`），只在 `gen_demand()` 上不同。
+### Environment IDs
 
-> 以前的 `sto/`、`bat/`、`batsto/` 三份重复代码已合并进 `masc` 包；这三个目录如果还在，只保存以前的运行结果
-> （日志、图、CSV），不再受 git 管理。
-
-### 环境编号
-
-| 环境 id | 类 | 简称 | 需求 |
+| Environment id | Class | Short name | Customer demand |
 |---|---|---|---|
-| `StoSupplyEnv-v1` | `masc.envs.stochastic:Stocha_P0` | Sto0 | 恒为 2（σ = 0） |
-| `StoSupplyEnv-v2` | `masc.envs.stochastic:Stocha_P01` | Sto01 | N(2, 0.1²)，取整、截断到 ≥ 0 |
-| `StoSupplyEnv-v3` | `masc.envs.stochastic:Stocha_P1` | Sto1 | N(2, 1²)，取整、截断到 ≥ 0 |
-| `BatSupplyEnv-v1` | `masc.envs.batch:Batch_L10` | Bat10 | N(2, 0.1²) 抽一个值，重复 10 天 |
-| `BatSupplyEnv-v2` | `masc.envs.batch:Batch_L7` | Bat7 | 同上，重复 7 天 |
-| `BatSupplyEnv-v3` | `masc.envs.batch:Batch_L3` | Bat3 | 同上，重复 3 天 |
+| `StoSupplyEnv-v1` | `masc.envs.stochastic:Stocha_P0` | Sto0 | always 2 (σ = 0) |
+| `StoSupplyEnv-v2` | `masc.envs.stochastic:Stocha_P01` | Sto01 | N(2, 0.1²), rounded down, ≥ 0, new draw every day |
+| `StoSupplyEnv-v3` | `masc.envs.stochastic:Stocha_P1` | Sto1 | N(2, 1²), rounded down, ≥ 0, new draw every day |
+| `BatSupplyEnv-v1` | `masc.envs.batch:Batch_L10` | Bat10 | one draw of N(2, 0.1²) repeated for 10 days |
+| `BatSupplyEnv-v2` | `masc.envs.batch:Batch_L7` | Bat7 | the same, repeated for 7 days |
+| `BatSupplyEnv-v3` | `masc.envs.batch:Batch_L3` | Bat3 | the same, repeated for 3 days |
 
-简称用于图名、图例和日志目录（`masc.marl_env.ENV_SHORT_NAMES`）。
+The short names are used in figure names, legends and log directories. Old class names such as
+`AssembySto:Stocha_P1` are still accepted.
 
----
+### Supply chain environment
 
-## 2. 供应链环境
+- **Episode**: T = 100 days. Every day the stages receive their deliveries (an upstream stage can only ship what it
+  has in stock; the missing part is a stockout of that stage and is not delivered later), the retailer serves the
+  customer demand, and inventories are clipped to the capacity (30).
+- **Event-driven decisions**: the three agents act only on *reorder days*, when the retailer's inventory reaches its
+  reorder point and no delivery is pending. One RLlib step is one decision; the days in between are simulated.
+- **Observation** of an agent: its own 9 state fields (inventory, reorder point, pending delivery, days to delivery,
+  stockouts since the last order, processing time, stockouts of the day, capacity, stockouts of the episode),
+  scaled to [0, 1]. Each agent sees only its own state.
+- **Action**: the order quantity (0–19) of every stage, and the reorder point (0–9) of the retailer.
 
-### 2.1 结构与时间
-
-- 串行三级：外部供应商（无限供货）→ **工厂** → **仓库** → **零售商** → 客户。
-- 一个 episode 为 T = 100 天。每天：各级收货（上游只能发出自己的库存，缺的部分记为上游的缺货，**不补发**）
-  → 零售商满足客户需求 → 库存截断到 [0, capacity − 1]（capacity = 30）。
-- **事件驱动决策**：只有当零售商库存 ≤ 再订货点且没有在途订单时（补货日），三个智能体才同时下单；
-  其余日子自动推进。一次 RLlib step = 一个补货日的决策，所以 γ 按决策折扣，而不是按天。
-
-### 2.2 智能体参数（`masc/agents/`）
-
-| 智能体 | 持有成本（/件/补货日） | 加工时间 | 对下游的服务时间 | 动作 |
+| Agent | Holding cost (per unit) | Processing time | Service time to downstream | Lead time |
 |---|---|---|---|---|
-| 工厂 factory | 1000 | 1 | 1（固定） | 订货量 0–19 |
-| 仓库 warehouse | 5 | 3 | 4（固定） | 订货量 0–19 |
-| 零售商 retailer | 1000 | 0 | 0 | 订货量 0–19，再订货点 0–9 |
+| Factory | 1000 | 1 | 1 | 1 |
+| Warehouse | 5 | 3 | 4 | 4 |
+| Retailer | 1000 | 0 | 0 | 4 |
 
-- 缺货成本：每件 10000（三级相同），零售商的缺货指客户需求未满足，上游的缺货指下游订单未能发出。
-- 交货期 = 上游的服务时间 + 本级加工时间（工厂 1 天，仓库 4 天，零售商 4 天）。
-- 动作空间形式上是 `MultiDiscrete(服务时间, 订货量, 再订货点)`，但服务时间被固定值覆盖，
-  再订货点只有零售商可选，所以实际决策是三级的订货量和零售商的再订货点。
-- 零售商初始库存 10、初始再订货点 5；其余初始为 0。
+- **Cost** (on reorder days): inventory × holding cost + stockouts since the last order × 10000. With
+  `final_costs` (default) the costs not settled yet are charged at the end of the episode.
+- **Reward**: `reward_mode="team"` (default, every agent gets minus the total cost), `"individual"` or `"mixed"`,
+  scaled by `reward_scale = 1e-4`.
+- **Stockout termination**: the original environment ends an episode after 12 stockout days. The experiments use
+  `--no-stockout-termination` (every episode runs 100 days), see [Design notes](#design-notes).
+- **`team_return`**: the episode return reported everywhere (training curves, figures, CSV files) is minus the total
+  cost of the episode in original cost units: every reorder day, the first one included, plus the final settlement.
 
-### 2.3 成本（奖励）
+### PPO hyperparameters
 
-成本只在补货日结算：每个智能体的成本 = 当前库存 × 持有成本 + 自上次下单以来的缺货数 × 10000。
+| Parameter | Value |
+|---|---|
+| Policy / value networks | separate MLPs 64 × 64, tanh (model `mlp`) |
+| Learning rate | 1e-4 in the experiments (`--lr`, default 3e-4) |
+| γ / λ (GAE) | 0.99 / 0.95 |
+| Clip parameter | 0.2 (`--factory-clip` for the factory only) |
+| Entropy coefficient | 0.01 |
+| Value loss coefficient / value clip | 0.5 / 10 (`--vf-clip`) |
+| Gradient clip | 0.5 |
+| Train batch / minibatch / epochs | 2048 / 256 / 5 |
+| Reward scale / reward mode | 1e-4 / team |
 
-### 2.4 缺货终止
+### TPPO hyperparameters
 
-原始环境在零售商累计缺货 12 天后终止 episode（`max_stockout_days = 12`）。
-**训练中默认关闭**（作业脚本传 `--no-stockout-termination`，episode 总是跑满 100 天），原因见第 11 节。
+Transformer PPO uses the PPO settings above with a gated transformer (model `transformer`,
+[`masc/models/transformer.py`](masc/models/transformer.py)) in place of the MLPs. It follows RLlib's
+[attention net example](https://github.com/ray-project/ray/blob/ray-2.6.1/rllib/examples/attention_net.py)
+(PPO + GTrXL, old API stack), implemented as a stateful RLModule for the new API stack. Every agent keeps the last
+`memory` observations of the episode as its state and attends over the window *memory + current observation*
+(positions before the start of the episode are masked): linear input projection + position embedding →
+`num_layers` × [LayerNorm → multi-head attention → GRU gate, LayerNorm → position-wise MLP → GRU gate] → LayerNorm →
+policy head (MultiDiscrete logits) and value head, sharing the transformer. Step-by-step sampling and sequence
+training give identical outputs.
 
----
-
-## 3. 多智能体封装（masc.marl_env）
-
-`SupplyChainMARLEnv` 把单规划者环境（状态矩阵 9 × 3、动作矩阵 3 × 3）按列拆成 3 个 RLlib 智能体：
-
-- **观测**：本级那一列状态（9 个字段：库存、再订货点、在途数量、到货天数、累计缺货、加工时间、当日缺货、
-  容量、episode 累计缺货），按取值个数归一化到 [0, 1]。每个智能体**只看自己的状态**。
-- **动作**：本级那一列动作。
-- **策略**：每个智能体一个 RLModule（MLP 64×64，tanh，策略与价值网络不共享层）。
-
-### env_config 选项
-
-| 键 | 默认 | 含义 |
+| Option | Default | attention_net.py option |
 |---|---|---|
-| `env_class` | `StoSupplyEnv-v3` | 环境 id，或 `"模块:类"`（旧名 `AssembySto:Stocha_P1` 等仍可用） |
-| `reward_scale` | `1e-4` | 奖励缩放（成本为 1e4–1e6 量级，不缩放时价值网络学不动） |
-| `reward_mode` | `"team"` | `team`：每个智能体得到 −团队总成本；`individual`：−自身成本；`mixed`：二者加权 |
-| `team_weight` | 0.5 | `mixed` 模式中团队成本的权重 |
-| `final_costs` | `True` | episode 结束时结算未结的成本（上次补货日之后的缺货、最后一天的持有成本） |
-| `termination_penalty` | 0 | 缺货终止时每个智能体的额外成本 |
-| `max_stockout_days` | `None` | `None`：沿用环境的 12；`0`：不因缺货终止 |
-| `obs_rows` | 状态行数 | 用 0 行补齐观测，使不同环境的观测空间一致（连续学习用） |
+| `--memory` | 20 | `attention_memory_inference` / `attention_memory_training` |
+| `--num-layers` | 1 | `attention_num_transformer_units` |
+| `--d-model` | 64 | `attention_dim` |
+| `--num-heads` | 2 | `attention_num_heads` |
+| `--head-dim` | 32 | `attention_head_dim` |
+| `--ff-dim` | 64 | `attention_position_wise_mlp_dim` |
+| `--gate-bias` | 2.0 | `attention_init_gru_gate_bias` |
+| `--max-seq-len` | 20 | `max_seq_len` |
+| `--head-hiddens` | 64 | hidden layers of the policy and value heads |
 
-### 团队回报 `team_return` 的统一定义
+Differences from the old GTrXL: the memory holds observations rather than the hidden states of every layer, and
+previous actions / rewards are not fed to the network.
 
-训练指标 `env_runners/team_return`、`evaluate()`、轨迹 CSV 的 `Cost` 列使用**同一个**定义：
+### 🎬 Demo
 
-> episode 总成本 = 每个补货日的成本（含第一个补货日，即由初始状态造成的成本）+ episode 结束时结算的成本
+`masc-ui` is a local web interface for a **Mac** (Python standard library only): choose environments, the algorithm
+and every option in forms generated from the command lines, preview the exact commands, run them in a local queue,
+follow their logs, browse the results (training curves with the mean ± std of the seeds, figures, re-plotting) and
+explore fixed policies of the environments. It is not connected to the cluster and refuses to start on other
+systems; results copied from the cluster with `rsync` can be browsed in it.
 
-`team_return` 以原始成本单位记录，与 `reward_mode` 和 `reward_scale` 无关，不同奖励设置的运行可以直接比较。
-`episode_return_mean` 则是三个智能体缩放后奖励之和，只用于训练监控。另记录 `initial_cost`（第一个补货日的成本）。
-
-### PPO 超参数（`build_ppo_config`）
-
-| 参数 | 值 | 说明 |
-|---|---|---|
-| lr | 命令行给出（推荐 1e-4） | |
-| γ / λ | 0.99 / 0.95 | |
-| clip_param | 0.2 | `clip_params={"factory": 0.1}` 可单独设置某个智能体 |
-| entropy_coeff | 0.01 | 防止策略过早变成确定性 |
-| vf_loss_coeff / vf_clip_param | 0.5 / 10 | 价值误差平方截断在 10 |
-| grad_clip | 0.5 | |
-| train_batch_size / minibatch / epochs | 2048 / 256 / 5 | 每次迭代 40 步 SGD |
-| seed | `None` | 网络与需求的随机种子 |
-| model / model_config | `mlp` | 智能体的网络：`masc.models` 注册表中的名字（`mlp`、`transformer`）及其设置 |
-
----
-
-## 4. 安装
-
-Python 3.10–3.12。先装 `requirements.txt`（精确版本：Ray 2.49.2、PyTorch 2.2.2 CPU 版、Gymnasium 1.1.1、
-NumPy 1.26.4、TensorBoard 等），再装 `masc` 包本身。`pyproject.toml` 只给出兼容的版本范围；先装
-`requirements.txt` 是为了拿到 CPU 版 PyTorch（Linux 上默认的 PyTorch 会额外下载约 3 GB 的 CUDA 库）。
-
-在 Iridis 6 上（计算节点没有外网，**在登录节点创建环境**）：
+![masc-ui demo](assets/masc_ui_demo.gif)
 
 ```bash
-module load conda && eval "$(conda shell.bash hook)"
+mkdir -p runs && masc-ui --root runs      # opens http://localhost:8765/?token=... in the browser
+```
+
+The server listens on 127.0.0.1 only and every API call needs the random token of the address opened at start-up.
+The local runs execute one after the other (logs in `<root>/ui_local/`); stopping `masc-ui` stops a running training.
+
+---
+
+## 2. Single-environment learning
+
+Each run trains the three agents on one environment, with one or several random seeds (one Ray Tune trial per seed
+and learning rate).
+
+| Algorithm | Command | Network | Figure | Default log directory |
+|---|---|---|---|---|
+| PPO | `masc-train` | `mlp` | `PPO_<env>.png` | `tu_logs/` |
+| Transformer PPO | `masc-train-transformer` | `transformer` | `TPPO_<env>.png` | `tu2_logs/` |
+
+```bash
+# experiment setting: team reward, no stockout termination, lr 1e-4, 5 seeds, fixed 2M steps
+masc-train --env StoSupplyEnv-v3 --no-stockout-termination --lr 0.0001 --seeds 0 1 2 3 4 \
+    --no-early-stop --total-timesteps 2000000 --num-env-runners 2 --dir tu_seeds
+masc-train-transformer --env StoSupplyEnv-v3 --no-stockout-termination --lr 0.0001 --seeds 0 1 2 3 4 \
+    --no-early-stop --total-timesteps 2000000 --num-env-runners 2 --dir tu2_seeds
+```
+
+| PPO, Bat10, 5 seeds | Transformer PPO, Bat10, 5 seeds |
+|---|---|
+| ![PPO Bat10](assets/PPO_Bat10_5seeds.png) | ![TPPO Bat10](assets/TPPO_Bat10_5seeds.png) |
+
+**Training monitor.** Every iteration the reward curve of a trial is checked over moving windows of
+`--conv-window` iterations: *converged* (stable within `--conv-tol` for `--conv-patience` iterations, near its best
+and improved by `--min-gain`), *collapsed*, *stalled*, *diverged*, or the step / time limit. A trial stops at its
+verdict, or with `--no-early-stop` runs to `--total-timesteps` and only records the first step of every verdict
+(`would_stop` in `training_status.json`). The defaults (tolerance 1 %, window 50, patience 100) stop on average at
+1.14M steps, 0.6 % below the return reached after 3M steps (calibrated on 24 complete curves).
+
+**Outputs** (under `--out-dir`, default the current directory):
+
+| File | Content |
+|---|---|
+| `<dir>_logs/<env>/<time>/` | TensorBoard logs, `progress.csv`, `params.json`, checkpoints of every trial |
+| `<dir>_logs/<env>/<time>/training_status.json` | lr, seed, verdict, steps, reason, `would_stop`, checkpoint of every trial |
+| `PPO_<env>.png`, `TPPO_<env>.png` | training curve; several seeds: mean (line) ± std (band) |
+| `csv_results/<tag>_curve.csv` | step, team return mean / std / number of seeds |
+| `csv_results/<tag>_trajectory.csv` | the trained policies of every seed: one deterministic episode of 100 days each (5 seeds → 500 rows) |
+
+The trajectory CSV contains only the converged policies, not the training: columns `seed`, `demand_seed`, `day`,
+then `<agent>_<state>` (inventory, reorderpoint, pendingDelivery, daysDelivery, stockout_cum, processingTimes,
+stockout_daily, capacity, stockout_total), `<agent>_<action>` (serviceTime, orderToSupplier, reorderPoint, executed
+on reorder days), `customer_demand`, `Cost` (negative; the 100 days of a seed add up to its episode total cost) and
+`retailer_actionTriggerHistory`. `masc-trajectory <run directory>` writes it for an existing run.
+
+### Design notes
+
+The first runs (individual rewards, unscaled rewards, lr 3e-3, termination after 12 stockout days) collapsed in every
+environment. The fixes and their evidence:
+
+| Problem | Symptom | Fix |
+|---|---|---|
+| Unscaled rewards | value function never learned (explained variance 0, value loss ~1e10) | `reward_scale = 1e-4` |
+| Too large updates | KL spikes, then collapse; deterministic policies | lr 1e-4, entropy 0.01, minibatch 256, 5 epochs |
+| Early termination | agents learned to stop ordering and end the episode (cost −1.97e5 vs −0.9e5 for good policies) | final settlement of the costs; no stockout termination in training |
+| Individual rewards | the factory stopped supplying to save holding costs, cascading stockouts downstream | team reward |
+| Value losses exploding at KL spikes | value loss up to ~3500 dominated the clipped gradients | `vf_clip_param = 10` |
+
+Longer training does not close the remaining gap to the best fixed policy: in 18 of 24 trials the deterministic
+policy at 3M steps is identical to the one at convergence; the gap comes from the local optimum reached by each seed,
+hence the 5-seed experiments.
+
+**Best fixed policies** (grid search over a common order quantity q of all stages or upstream q = 19 and the retailer
+reorder point rp, evaluated on 50 test seeds, no stockout termination):
+
+| | Bat10 | Bat7 | Bat3 | Sto0 | Sto01 | Sto1 |
+|---|---|---|---|---|---|---|
+| (q, rp) | (18, 6) | (19, 7) | (18, 7) | (18, 6) | (19, 6) | (19, 7) |
+| Total cost | 71,840 | 75,260 | 77,800 | 94,000 | 63,640 | 84,680 |
+
+---
+
+## 3. Continual learning
+
+The agents are trained on a sequence of environments; every phase starts from the policies of the previous phase,
+and the sequence is repeated for several rounds. The observations of all environments have the same 9 rows, so the
+policies transfer between them.
+
+| Task (`--task`) | Sequence | Default rounds | Model directory |
+|---|---|---|---|
+| `0-01-1` | Sto0 → Sto01 → Sto1 | 3 (9 phases) | `PPOcon-sto_models/` |
+| `1-01-0` | Sto1 → Sto01 → Sto0 | 3 | `PPOcon-sto_models/` |
+| `3-7-10` | Bat3 → Bat7 → Bat10 | 3 | `PPOcon-bat_models/` |
+| `10-7-3` | Bat10 → Bat7 → Bat3 | 3 | `PPOcon-bat_models/` |
+| `bat10-sto1` | Bat10 → Sto1 | 5 | `PPOconbat-sto_models/` |
+| `sto1-bat10` | Sto1 → Bat10 | 5 | `PPOconbat-sto_models/` |
+
+```bash
+# one run
+masc-continual --task 0-01-1 --lr 0.0001 --timesteps-per-phase 1000000 --no-stockout-termination
+# several seeds of one experiment (one run per seed, no figure during the training), then one figure
+masc-continual --task 0-01-1 --seed 0 --run-name exp1 --no-figure --no-monitor --lr 0.0001 \
+    --timesteps-per-phase 1000000 --no-stockout-termination      # ... and seeds 1-4
+masc-plot-continual --seeds PPOcon-sto_models/0-01-1/exp1
+```
+
+Every iteration writes `phase<i>_<env>/team_return` to TensorBoard (`<models dir>/<task>/<run>/[seed=<s>/]lr=<lr>/tb`),
+the checkpoint of every phase is kept for the next phase, and `continual_status.json` holds the settings and the test
+return of every phase. The figure is drawn once at the end, in the style of
+[dcontinustoPPO2_2.png](assets/dcontinustoPPO2_2.png): one segment per phase in the colour of its environment
+(mean ± std of the seeds), dotted lines and labels at the start of every round, e.g.
+`PPOcon_Sto0-Sto01-Sto1_3rounds_1Msteps-per-phase_lr0.0001_5seeds_<run>.png`. A monitor stops a task that diverges,
+collapses or does not learn in the first phase (`--no-monitor` to switch it off).
+
+---
+
+## 4. 📦 Installation
+
+Python 3.10–3.12. Install the exact versions of `requirements.txt` first (Ray 2.49.2, PyTorch 2.2.2 CPU build,
+Gymnasium 1.1.1, NumPy 1.26.4, TensorBoard, ...), then the package:
+
+```bash
 conda create -n MASC python=3.10 -y && conda activate MASC
-cd /iridisfs/scratch/ww1a23/MASC_Code
+git clone https://github.com/wangwan0910/MASC_ThreeAgent2026.git && cd MASC_ThreeAgent2026
 pip install -r requirements.txt
-pip install -e .                 # 可编辑安装：修改 masc/ 下的代码立即生效
-masc-check                       # 6 个环境各跑一个随机 episode
+pip install -e .                 # editable: changes in masc/ take effect immediately
+masc-check                       # every environment runs one random episode
+pip install -e ".[dev]" && pytest   # optional: the test suite
 ```
 
-其他安装方式：
+- On a cluster without internet on the compute nodes (e.g. Iridis), create the environment on a login node. The
+  SLURM scripts activate the conda environment `MASC` (other name: `CONDA_ENV=xxx sbatch ...`).
+- On Linux, `requirements.txt` installs the CPU build of PyTorch (the default wheel downloads ~3 GB of CUDA
+  libraries). For GPU training (`--num-gpus 1`) install the CUDA build instead.
+- On a Mac the same commands work; `masc-ui` is only available there.
+
+---
+
+## 5. 🔁 Workflow
+
+```mermaid
+flowchart LR
+    A[Install<br/>pip install -e .] --> B[Check<br/>masc-check, pytest]
+    B --> C[Explore the environments<br/>masc-ui: fixed policies]
+    B --> D[Single-environment learning<br/>PPO / TPPO, 5 seeds<br/>jobs/job_train.sh]
+    B --> E[Continual learning<br/>5 seeds<br/>jobs/job_continual_seeds.sh]
+    D --> F[Figures + curve CSV<br/>+ trajectory CSV]
+    E --> G[Continual figure<br/>jobs/job_continual_plot.sh]
+    F --> H[Copy results to the Mac<br/>rsync]
+    G --> H
+    H --> I[Browse and re-plot<br/>masc-ui / masc-plot]
+```
+
+1. Install the package and run `masc-check` (and `pytest`).
+2. Explore the environments and the best fixed policies in `masc-ui` (Mac) or with Python.
+3. Train PPO and Transformer PPO on the six environments with five seeds on the cluster (`jobs/job_train.sh`).
+4. Run the continual learning experiments with five seeds (`jobs/job_continual_seeds.sh` + `jobs/job_continual_plot.sh`).
+5. Use the figures and the CSV files; copy the logs to a Mac (`rsync`) to browse and re-plot them in `masc-ui`.
+
+---
+
+## 6. 🛠️ Usage
+
+### Commands
+
+| Command | Module | Purpose |
+|---|---|---|
+| `masc-train` | `masc.train` | single-environment PPO |
+| `masc-train-transformer` | `masc.main_transformerPPO` | single-environment Transformer PPO |
+| `masc-continual` | `masc.continual` | continual learning |
+| `masc-trajectory` | `masc.trajectory` | trajectory CSV of an existing run |
+| `masc-plot` | `masc.plotting` | training curve of a run (`--seeds`: mean ± std) |
+| `masc-plot-continual` | `masc.plotting` | continual learning curve (`--seeds`: mean ± std of the seeds) |
+| `masc-check` | `masc.marl_env` | run every environment once |
+| `masc-ui` | `masc.ui.server` | local web interface (Mac) |
+
+Every command has `--help`. Main options of `masc-train` / `masc-train-transformer`:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--env` | required | environment id |
+| `--lr` | 3e-4 | one or several learning rates (grid search) |
+| `--seeds` | not fixed | one or several random seeds (networks and demand) |
+| `--reward-mode` / `--reward-scale` | team / 1e-4 | reward of the agents |
+| `--no-stockout-termination` | off | every episode runs 100 days |
+| `--total-timesteps` / `--no-early-stop` | 9e6 / off | step limit; run to the limit without stopping at a verdict |
+| `--vf-clip` / `--factory-clip` | 10 / 0.2 | value clip; clip parameter of the factory |
+| `--num-env-runners` | 1 | sampling workers per trial (a trial uses 1 + n CPUs) |
+| `--out-dir`, `--dir`, `--tag` | `.`, `tu`, none | output directory, log directory, suffix of the figure / CSV names |
+
+### On a SLURM cluster
+
+The job scripts write everything to the directory they are submitted from.
+
+| Script | Array tasks |
+|---|---|
+| `jobs/job_train.sh` | 0 Bat10, 1 Bat7, 2 Bat3, 3 Sto1, 4 Sto01, 5 Sto0 (`ALGO=ppo` or `ALGO=transformer`) |
+| `jobs/job_continual.sh` | 0 `0-01-1`, 1 `1-01-0`, 2 `3-7-10`, 3 `10-7-3`, 4 `bat10-sto1`, 5 `sto1-bat10` |
+| `jobs/job_continual_seeds.sh` | one task per seed of one continual learning task (`TASK`, default `0-01-1`) |
+| `jobs/job_continual_plot.sh` | figure of all the seeds of a continual learning experiment |
 
 ```bash
-pip install -e ".[dev]" && pytest                                      # 带测试依赖，运行测试
-pip install git+https://github.com/wangwan0910/MASC_ThreeAgent2026.git  # 直接从 GitHub 安装（非可编辑）
+mkdir -p runs && cd runs
+ARGS="--seeds 0 1 2 3 4 --lr 0.0001 --no-early-stop --total-timesteps 2000000 --num-env-runners 2"
+sbatch ../jobs/job_train.sh $ARGS --dir tu_seeds                                   # PPO, six environments
+ALGO=transformer sbatch --mem=40G ../jobs/job_train.sh $ARGS --dir tu2_seeds       # Transformer PPO
+RUN=$(date +%Y%m%d-%H%M%S)
+J=$(RUN_NAME=$RUN sbatch --parsable ../jobs/job_continual_seeds.sh --lr 0.0001 \
+    --timesteps-per-phase 1000000 --num-env-runners 4 --no-stockout-termination)
+sbatch --dependency=afterany:${J%%_*} ../jobs/job_continual_plot.sh PPOcon-sto_models/0-01-1/$RUN
 ```
 
-作业脚本默认激活名为 `MASC` 的 conda 环境（其他名字：`CONDA_ENV=xxx sbatch jobs/job_train.sh`），
-环境里必须已经 `pip install` 了 `masc`。GPU 训练（`--num-gpus 1`）需要安装 CUDA 版 PyTorch，见 `requirements.txt` 开头。
+Notes: Transformer PPO with five seeds needs up to ~22 GB per job (request 40 GB) and about 10 h for 2M steps. The
+scripts start Ray with a random delay and retry once if it fails to start (many jobs on one node); a run that does
+not converge exits with code 1 (SLURM state FAILED, the reason is in `training_status.json`).
 
-### 命令行入口
-
-| 命令 | 等价于 | 作用 |
-|---|---|---|
-| `masc-train` | `python -m masc.train` | 单环境多智能体 PPO 训练 |
-| `masc-train-transformer` | `python -m masc.main_transformerPPO` | 同上，策略为门控 Transformer |
-| `masc-continual` | `python -m masc.continual` | 连续学习 |
-| `masc-plot` | `python -m masc.plotting` | 从 TensorBoard 日志重画训练曲线 |
-| `masc-plot-continual` | — | 重画连续学习曲线 |
-| `masc-check` | `python -m masc.marl_env` | 检查 6 个环境能否运行 |
-| `masc-trajectory` | `python -m masc.trajectory` | 从已有的运行生成轨迹 CSV（第 9 节） |
-| `masc-ui` | `python -m masc.ui.server` | 网页界面，仅 Mac 本地（第 8a 节） |
-
-每个命令都有 `--help`。
-
-### 在 Python 中使用
+### Python
 
 ```python
 import numpy as np
@@ -213,340 +351,45 @@ obs, info = env.reset(seed=0)
 obs, rewards, terminated, truncated, info = env.step(
     {"factory": np.array([0, 18, 0]), "warehouse": np.array([0, 18, 0]), "retailer": np.array([0, 18, 6])})
 
-config = build_ppo_config({"env_class": "BatSupplyEnv-v1", "max_stockout_days": 0}, lr=1e-4, seed=0)
+config = build_ppo_config({"env_class": "BatSupplyEnv-v1", "max_stockout_days": 0}, lr=1e-4, seed=0,
+                          model="transformer", model_config={"memory": 30})
 ```
+
+### Extending
+
+- **A new network**: write a TorchRLModule (with `ValueFunctionAPI` for PPO), register a builder with
+  `masc.models.register_model("<name>", defaults={...})`, use it with `build_ppo_config(model="<name>")`, add an entry
+  script like `masc/main_transformerPPO.py`, and one line in `COMMANDS` / `ALGORITHMS` of `masc/ui/server.py`.
+- **A new stage**: derive from `BaseAgent` in `masc/agents/` and add it to `make_agents()`; spaces, costs, CSV columns
+  and the wrapper follow the list of agents (the last one must be a `Retailer`).
+- **A new demand process**: derive from `POSingAgent1W1F` in `masc/envs/`, implement `gen_demand()`, and register an
+  id in `ENV_IDS` / `ENV_SHORT_NAMES` and a colour in `masc.plotting.ENV_COLORS`.
 
 ---
 
-## 5. 单环境训练（masc-train）
+## 7. 🐕 Tasks
 
-在任意一个输出目录下运行（日志、图、CSV 都写到 `--out-dir`，默认当前目录）：
-
-```bash
-mkdir -p runs && cd runs
-
-# 推荐设置：团队奖励、不因缺货终止、lr 1e-4、5 个种子、固定 2M 步
-masc-train --env StoSupplyEnv-v3 --reward-mode team --no-stockout-termination \
-    --lr 0.0001 --seeds 0 1 2 3 4 --no-early-stop --total-timesteps 2000000 --num-env-runners 2
-
-# 单种子、自动判断收敛后停止
-masc-train --env BatSupplyEnv-v1 --no-stockout-termination --lr 0.0001
-
-# 学习率网格搜索（每个 lr 一个 Tune trial，并行运行）
-masc-train --env BatSupplyEnv-v3 --no-stockout-termination --lr 0.0003 0.0001
-
-tensorboard --logdir tu_logs      # 查看训练过程
-```
-
-### 两种算法
-
-| 算法 | 命令 | 网络（`masc.models` 中的名字） | 图名前缀 | 默认日志目录 |
+| Group | Tasks | Algorithms | Setting | Output |
 |---|---|---|---|---|
-| PPO | `masc-train` | `mlp`：策略、价值各一个 MLP 64×64 | `PPO_` | `tu_logs/` |
-| Transformer PPO | `masc-train-transformer` | `transformer`：门控 Transformer（GTrXL 式） | `TPPO_` | `tu2_logs/` |
+| Single-environment learning | Bat10, Bat7, Bat3, Sto0, Sto01, Sto1 | PPO, Transformer PPO | 5 seeds, lr 1e-4, 2M steps, no stockout termination | `PPO_<env>.png`, `TPPO_<env>.png`, curve and trajectory CSV |
+| Continual learning, stochastic demand | `0-01-1`, `1-01-0` | PPO | 3 rounds (9 phases), 1M steps per phase, 5 seeds | `PPOcon_<sequence>_..._5seeds_<run>.png` |
+| Continual learning, batch demand | `3-7-10`, `10-7-3` | PPO | as above | as above |
+| Continual learning, stochastic ↔ batch | `bat10-sto1`, `sto1-bat10` | PPO | 5 rounds | as above |
+| Baseline | the six environments | best fixed policy | grid search, 50 test seeds | table in [Design notes](#design-notes) |
 
-两个命令的参数、训练监控、多种子、制图和 CSV 完全相同；`masc-train-transformer` 另有一组 Transformer 参数。
-
-**Transformer PPO**（`masc/models/transformer.py`、`masc/main_transformerPPO.py`）参照 RLlib 的
-[attention_net.py](https://github.com/ray-project/ray/blob/ray-2.6.1/rllib/examples/attention_net.py)（PPO + GTrXL，
-`use_attention`）。该示例只适用于 RLlib 的旧 API（ModelV2），本项目用新 API（RLModule），所以实现为一个自定义的
-有状态 RLModule：
-
-- 每个智能体保存本 episode 最近 `memory` 步的观测作为状态，每一步对"记忆 + 当前观测"这个滑动窗口做注意力；
-  episode 开始之前的记忆位置被屏蔽。
-- 结构：线性输入投影 + 位置嵌入 → `num_layers` 层门控 Transformer（LayerNorm → 多头注意力 → GRU 门，
-  LayerNorm → 逐位置 MLP → GRU 门，GRU 门初始偏置使其接近恒等映射，同 GTrXL）→ 当前步的输出 →
-  策略头（logits）/ 价值头；策略与价值共享 Transformer。
-- 逐步采样与整段序列训练用同一个窗口计算，结果完全一致（测试 `test_transformer_step_by_step_equals_sequence`）。
-- 与旧 API 的 GTrXL 的区别：GTrXL 的记忆是各层的隐藏状态，这里的记忆是观测本身；不支持
-  `attention_use_n_prev_actions/rewards`。
-
-| 参数 | 默认 | 对应 attention_net.py 的选项 |
-|---|---|---|
-| `--memory` | 20 | `attention_memory_inference` / `attention_memory_training` |
-| `--num-layers` | 1 | `attention_num_transformer_units` |
-| `--d-model` | 64 | `attention_dim` |
-| `--num-heads` | 2 | `attention_num_heads` |
-| `--head-dim` | 32 | `attention_head_dim` |
-| `--ff-dim` | 64 | `attention_position_wise_mlp_dim` |
-| `--gate-bias` | 2.0 | `attention_init_gru_gate_bias` |
-| `--max-seq-len` | 20 | `max_seq_len` |
-| `--head-hiddens` | 64 | 策略头、价值头的隐藏层 |
-
-```bash
-masc-train-transformer --env StoSupplyEnv-v3 --no-stockout-termination --memory 30 --num-layers 2
-```
-
-### 主要参数
-
-| 参数 | 默认 | 说明 |
-|---|---|---|
-| `--env` | 必填 | 环境 id（第 1 节） |
-| `--lr` | 3e-4 | 一个或多个学习率（多个 → 网格搜索） |
-| `--seeds` | 不固定 | 一个或多个种子（多个 → 每个种子一个 trial，图为均值 ± std） |
-| `--reward-mode` | team | team / individual / mixed |
-| `--reward-scale` | 1e-4 | |
-| `--no-stockout-termination` | 关 | episode 总是跑满 100 天（作业脚本默认打开） |
-| `--max-stockout-days N` | 环境值 12 | |
-| `--no-final-costs` | — | 恢复旧行为：episode 结束时不结算 |
-| `--termination-penalty` | 0 | |
-| `--vf-clip` | 10 | 价值误差平方的截断值（`inf` 为不截断） |
-| `--factory-clip` | 0.2 | 工厂策略单独的 PPO clip 参数 |
-| `--total-timesteps` | 9e6 | 每个 trial 的最大步数（决策数） |
-| `--no-early-stop` | 关 | 跑满 `--total-timesteps`，只记录监控结论 |
-| `--time-budget-hours` | 25 | 所有 trial 的时间上限（低于 SLURM 时限） |
-| `--num-env-runners` | 1 | 每个 trial 的采样进程数（每个 trial 占 1 + n 个 CPU） |
-| `--out-dir` | `.` | 日志、图和 CSV 的根目录 |
-| `--dir` / `--name` | `tu` / 算法名 | 日志目录 `<out-dir>/<dir>_logs/<环境简称>/<时间戳>/<name>/` |
-| `--tag` | 空 | 图名和 CSV 名的后缀，变体与测试不会互相覆盖 |
-| `--checkpoint-freq` | 50 | 每 n 次迭代保存一次 checkpoint |
-
-### 训练监控（TrainingMonitor）
-
-每次迭代检查 `episode_return_mean`（按 `--conv-window` 次迭代的窗口平均）：
-
-| 结论 | 条件 | 动作 |
-|---|---|---|
-| converged | 相邻两个窗口变化 < `--conv-tol`（或在噪声范围内）且无显著上升趋势，持续 `--conv-patience` 次迭代，接近最好值，且比开始提高 ≥ `--min-gain` | 停止，画图 |
-| diverged | loss 或回报非有限值 | 立即停止 |
-| collapsed | 最后一个窗口比最好窗口差 `--collapse-tol` 以上，持续 `--collapse-patience` 次迭代 | 停止 |
-| stalled / no_learning | `--stall-patience` 次迭代没有 `--conv-tol` 的提高 | 停止 |
-| max_timesteps / time_budget | 达到步数或时间上限仍未收敛 | 停止 |
-| completed | `--no-early-stop` 时跑满步数 | 画图；各结论第一次出现的步数记在 `would_stop` |
-
-默认 `--conv-tol 0.01 --conv-window 50 --conv-patience 100 --min-timesteps 500000`。
-在 24 条 3M 步完整曲线上回放校准：这组默认值平均在 1.14M 步停止，停止时的回报平均只比 3M 步的水平差 0.6%；
-更严格的设置多花 60–80% 的步数，只改善约 0.4 个百分点，所以保留默认值。
-
-只有 converged / completed 的 trial 会画正式图和写 CSV；否则只在日志目录写 `<名称>_NOT_CONVERGED.png`，
-脚本退出码为 1（SLURM 显示 FAILED，这是预期行为，原因见 `training_status.json`）。
+Figure conventions (all figures): Bat10 darkgoldenrod, Bat7 goldenrod, Bat3 gold, Sto0 dodgerblue, Sto01
+lightskyblue, Sto1 skyblue; both axes in scientific notation; single-environment figures with the legend in the
+lower right and common axis limits (x 0–2×10⁶, y −2×10⁶–0, `masc.plotting.XLIM / YLIM`).
 
 ---
 
-## 6. 多种子训练与制图
+## 8. 🎉 Acknowledgments
 
-`--seeds 0 1 2 3 4` 在一个作业里并行训练 5 个 trial，每个种子同时固定网络初始化和需求序列
-（RLlib `config.seed`）。5 个 trial × (1 + 2) 个 CPU = 15，所以用 `--num-env-runners 2` 正好放进 16 核的作业。
-
-训练结束后，`masc-train` 自动画出 `PPO_<环境>.png`：**5 个种子的均值为实线，均值 ± 标准差为浅色阴影**
-（风格同 `assets/PPO_demo.png`）。多个学习率时，选种子平均最终回报最好的那个学习率。曲线 CSV 保存
-`team_return_mean`、`team_return_std`、`n_seeds`；轨迹 CSV 包含这个学习率的每个种子（第 9 节）。
-
-手动重画：
-
-```bash
-masc-plot tu_seeds_logs/Bat10/<时间戳> --seeds --label "PPO in Bat10" --out PPO_Bat10.png
-masc-plot tu_seeds_logs/Bat10/<时间戳> --seeds --smoothing 0.6 ...   # 每个种子先平滑再平均
-masc-plot tu_team_logs/Bat10/<时间戳> --lr 0.0003 ...                # 单 trial：原始曲线 + 平滑曲线
-```
-
----
-
-## 7. 在 Iridis 集群上运行
-
-`jobs/` 下有两个 SLURM 数组作业脚本（每个任务 16 CPU、20 GB、最长 26 小时），所有输出写到**提交作业的目录**：
-
-| 脚本 | 任务 0 | 任务 1 | 任务 2 | 任务 3 | 任务 4 | 任务 5 |
-|---|---|---|---|---|---|---|
-| `jobs/job_train.sh` | Bat10 | Bat7 | Bat3 | Sto1 | Sto01 | Sto0 |
-| `jobs/job_continual.sh` | 0-01-1 | 1-01-0 | 3-7-10 | 10-7-3 | bat10-sto1 | sto1-bat10 |
-
-`job_train.sh` 默认传入 `--reward-mode $REWARD_MODE --no-stockout-termination --dir tu_$REWARD_MODE`
-（`REWARD_MODE` 默认 `team`；`ALGO=transformer` 时用 `masc-train-transformer`，日志前缀 `tu2_`）；`sbatch` 后面的参数原样传给
-`masc-train`，并且排在默认参数之后，可以覆盖它们。
-
-```bash
-mkdir -p runs && cd runs
-sbatch ../jobs/job_train.sh                                   # 六个环境，PPO，团队奖励
-sbatch --array=0-2 ../jobs/job_train.sh                       # 只跑批量需求环境
-ALGO=transformer sbatch ../jobs/job_train.sh                  # Transformer PPO
-REWARD_MODE=individual sbatch ../jobs/job_train.sh            # 个体奖励，日志在 tu_individual_logs/
-sbatch ../jobs/job_train.sh --seeds 0 1 2 3 4 --lr 0.0001 --no-early-stop \
-    --total-timesteps 2000000 --num-env-runners 2 --dir tu_seeds    # 5 种子
-sbatch --array=5 ../jobs/job_continual.sh                     # 连续学习任务 sto1-bat10
-squeue -u $USER                                               # 查看作业
-```
-
-- 输出：`<作业名>_<数组作业号>_<任务号>.out/.err`。作业结束会发邮件（脚本中的 `--mail-user`，换人使用时要改）。
-- 多个作业可能被分到同一节点：`init_ray` 为每个作业单独启动 Ray（临时目录 `/tmp/ray_<作业号>`，对象存储上限 2 GB），
-  脚本启动前随机等待 0–60 秒，训练命令在 5 分钟内失败会自动重试一次。
-- **不要在登录节点上运行训练**（Ray 在登录节点上会卡住）；本地测试用 `sbatch --time=00:30:00` 跑短作业。
-  `masc-check` 和 `pytest` 不需要 Ray，可以在登录节点上运行。
-
----
-
-## 8. 连续学习
-
-智能体在一串环境上依次训练，每个阶段从上一阶段的策略继续，整个顺序重复 `--rounds` 次。
-所有环境的观测补齐到 9 行（`obs_rows`），策略可以在环境间迁移。
-
-| 任务（`--task`） | 环境顺序 | 默认轮数 | 模型目录 |
-|---|---|---|---|
-| `0-01-1` | Sto0 → Sto01 → Sto1 | 3 | `PPOcon-sto_models/` |
-| `1-01-0` | Sto1 → Sto01 → Sto0 | 3 | `PPOcon-sto_models/` |
-| `3-7-10` | Bat3 → Bat7 → Bat10 | 3 | `PPOcon-bat_models/` |
-| `10-7-3` | Bat10 → Bat7 → Bat3 | 3 | `PPOcon-bat_models/` |
-| `bat10-sto1` | Bat10 → Sto1 | 5 | `PPOconbat-sto_models/` |
-| `sto1-bat10` | Sto1 → Bat10 | 5 | `PPOconbat-sto_models/` |
-
-```bash
-masc-continual --task 0-01-1 --rounds 1
-masc-continual --task sto1-bat10 --lr 0.0003 0.0001          # 学习率依次运行
-sbatch --array=4,5 ../jobs/job_continual.sh                   # 在集群上
-masc-plot-continual PPOcon-bat_models/10-7-3/<时间>/lr=0.0003/tb --out PPOcon.png   # 重画
-```
-
-每阶段默认 200000 步（`--timesteps-per-phase`）。训练曲线写到 `<models_dir>/tb/`，结束时在 `--out-dir`
-画 `PPOcon_<任务>_r<轮数>_lr<lr>_<时间>.png`（每个环境一种颜色）。`ContinualMonitor` 在发散、崩溃或第一阶段不学习时
-提前结束该学习率的任务（`--no-monitor` 关闭），结论在 `<models_dir>/lr=<lr>/continual_status.json`。
-
-> 注意：连续学习尚未使用多种子和第 11 节的新默认设置（例如不因缺货终止），图的纵轴是缩放后的
-> `episode_return_mean`，不是原始成本单位。
-
----
-
-## 8a. 网页界面（masc-ui）
-
-`masc-ui` 是**只在 Mac 本地运行**的网页界面（只用 Python 标准库，不需要额外安装），与 Iridis 无关：
-在浏览器里完成设置，训练直接在 Mac 上运行。Iridis 上照常用命令行和 `jobs/` 里的 SLURM 脚本；
-在非 macOS 系统上 `masc-ui` 会拒绝启动并给出提示。
-
-```bash
-# 在 Mac 上：从 GitHub 拉取代码并安装
-git pull
-pip install -r requirements.txt && pip install -e .
-mkdir -p runs && masc-ui --root runs          # 自动在浏览器中打开 http://localhost:8765/?token=...
-```
-
-| 页面 | 功能 |
-|---|---|
-| 训练 | 勾选环境、选择 PPO / Transformer PPO（每种算法一张表单）；参数表单由 `masc-train` 的命令行自动生成（新增参数自动出现，修改过的值高亮）；预设"论文设置 / 快速测试"；实时预览完整命令；提交后在本机运行 |
-| 连续学习 | 勾选任务（6 个），参数同 `masc-continual` |
-| 运行 | 本机运行队列：状态、当前环境、退出码、日志（自动刷新）、取消 |
-| 结果 | 结果目录下所有运行（单环境训练、连续学习，运行中的也会显示）；交互式训练曲线（多种子显示均值 ± std 阴影）、trial 状态与 `would_stop`、运行目录里的图；用 `masc-plot` 重新制图 |
-| 环境探索 | 给定三级订货量和再订货点，模拟固定策略的平均总成本、各级成本、库存与每日成本曲线；网格搜索最优固定策略 |
-
-- **运行方式**：提交的命令（`python -m masc.train ...`，用启动 `masc-ui` 的那个 Python）在结果目录里运行，
-  **依次执行**：同一时间只运行一个，避免多个 Ray 训练争用笔记本的 CPU；日志在 `<结果目录>/ui_local/`。
-  关闭 `masc-ui`（Ctrl-C）会停止正在运行的训练。
-- 每个 trial 占 1 + `--num-env-runners` 个 CPU，预设里设为 1；多种子的 trial 在 CPU 不够时由 Ray Tune 自动排队。
-  "论文设置"（5 种子 × 2M 步）在笔记本上需要数小时，正式实验建议仍在 Iridis 上用 `jobs/job_train.sh` 跑。
-- **查看 Iridis 上的结果**：把日志 `rsync` 到 Mac 的结果目录（第 9 节），"结果"页就能显示曲线、图并重新制图。
-- 每个参数在运行前都用 `masc-train` / `masc-continual` 自己的 argparse 校验，表单里的错误会直接显示。
-- **安全**：只监听 127.0.0.1，每次启动生成随机令牌（启动时打开的网址里带着），其他网页不能借它在本机执行命令。
-- 其他选项：`--port 8800`（默认 8765，被占用时自动换下一个）、`--no-browser`（不自动打开浏览器）。
-
----
-
-## 9. 输出文件
-
-| 文件 | 位置 | 内容 |
-|---|---|---|
-| TensorBoard 日志、checkpoint | `<dir>_logs/<环境>/<时间戳>/<name>/<trial>/` | `progress.csv`、`params.json`、`checkpoint_00000k/`（每 50 次迭代） |
-| 训练结论 | `<dir>_logs/<环境>/<时间戳>/training_status.json` | 每个 trial 的 lr、seed、status、steps、reason、would_stop、checkpoint |
-| 训练曲线图 | `<out-dir>/PPO_<环境>[_<tag>].png`（日志目录里有副本） | 单 trial 或多种子均值 ± std |
-| 曲线 CSV | `<out-dir>/csv_results/<tag>_curve.csv` | step, team_return(_smoothed) 或 team_return_mean/std/n_seeds |
-| 轨迹 CSV | `<out-dir>/csv_results/<tag>_trajectory.csv` | 训练结束（收敛）后的策略：每个种子用确定性动作跑一个 100 天的 episode，5 个种子共 500 行（见下） |
-
-**轨迹 CSV**（`masc/trajectory.py`）只保存训练好的策略的数据，不含训练过程：图中那个学习率的每个种子（trial）
-取最终的 checkpoint，用确定性动作跑一个 T = 100 天的 episode，需求序列用这个种子本身生成（`--csv-seed` 可让所有种子
-用同一个需求种子），全部写进一个文件（5 个种子 → 500 行）。列：
-
-| 列 | 含义 |
-|---|---|
-| `seed`、`demand_seed`、`day` | 训练种子、episode 的需求种子、第几天（1–100） |
-| `<智能体>_<状态>` | 当天结束时的状态：inventory、reorderpoint、pendingDelivery、daysDelivery、stockout_cum、processingTimes、stockout_daily、capacity、stockout_total |
-| `<智能体>_<动作>` | 补货日执行的动作：serviceTime、orderToSupplier、reorderPoint（非补货日为 0） |
-| `customer_demand`、`Cost`、`retailer_actionTriggerHistory` | 当天需求；当天记账的成本（负数，每个种子 100 天之和 = episode 总成本）；是否补货日（1） |
-
-已有的运行可以用 `masc-trajectory` 重新生成，例如
-`masc-trajectory runs/tu_seeds_logs/Bat10/<时间戳>`（写到 `runs/csv_results/`，`--out` 指定文件名）。
-
-CSV 文件名：`<算法>_<环境>[_<tag>]_<需求>_lr<lr>_<网络>_<步数>Msteps[_<n>seeds]_<日期时间>`，
-例如 `PPO_Sto1_mu2-std1_lr0.0001_mlp64x64_2Msteps_5seeds_20261012-170501_curve.csv`，从不覆盖旧文件。
-
-训练日志、checkpoint、SLURM 输出不进 git（见 `.gitignore`，`runs/` 整个目录被忽略），需要时用 `rsync` 单独拷贝，例如：
-
-```bash
-rsync -av ww1a23@<iridis登录节点>:/iridisfs/scratch/ww1a23/MASC_Code/runs/tu_seeds_logs/ ./runs/tu_seeds_logs/
-```
-
----
-
-## 10. 制图规范
-
-全项目统一：
-
-| 环境 | Bat10 | Bat7 | Bat3 | Sto0 | Sto01 | Sto1 |
-|---|---|---|---|---|---|---|
-| 颜色 | darkgoldenrod | goldenrod | gold | dodgerblue | lightskyblue | skyblue |
-
-- 横纵坐标都用科学计数法。
-- 单环境训练图：图例在右下角；所有环境、所有算法使用相同的坐标范围（`masc.plotting.XLIM = (0, 2e6)`，
-  `YLIM = (-2e6, 0)`），超出范围时打印 WARNING，可用 `--xlim/--ylim` 覆盖。
-- 颜色只定义在一处：`masc.plotting.ENV_COLORS`（单环境图和连续学习图共用）。
-
----
-
-## 11. 设计决策与实验依据
-
-最初的训练（个体奖励、不缩放奖励、lr 0.003、缺货 12 天终止）在全部 6 个环境上先上升后崩溃。逐项修复如下：
-
-| 问题 | 现象 | 修复 |
-|---|---|---|
-| 奖励未缩放 | `vf_explained_var` 始终为 0，`vf_loss` ≈ 1e9–1e10 | `reward_scale = 1e-4` |
-| 更新过猛、策略过早确定 | KL 尖峰（5.6、32）后崩溃，熵 → 0 | lr 3e-4 / 1e-4，entropy 0.01，minibatch 256，5 epochs |
-| 提前终止的漏洞 | 学会"不订货、尽快终止"（成本 −19.7 万，好的策略约 −9 万） | 结算期末成本；**训练时不因缺货终止**（"不订货"变为 −138 万） |
-| 个体奖励不一致 | 工厂为降低持有成本停止供货，下游级联缺货 | 默认团队奖励 |
-| 价值网络在 KL 尖峰时爆炸 | `vf_loss` 达到 ~3500，梯度被价值项主导 | `vf_clip_param = 10`（最大值 < 10） |
-| lr 3e-4 偶尔不稳定 | 6 个 3M 步 trial 中共 16 次 KL > 0.1 的尖峰，最大瞬时下降 195% | lr 1e-4：0 次尖峰，最大瞬时下降 < 11% |
-
-**更长的训练无法缩小与最优固定策略的差距**：24 个 trial 在收敛点（平均 1.14M 步）与 3M 步时的确定性策略，
-与最优固定策略的平均差距分别为 13.4% 和 12.9%；18/24 个 trial 在两个时刻的确定性策略完全相同。差距主要来自
-不同种子落入的局部最优（同一环境内 0%–25%），因此改为多种子训练报告均值 ± std。
-
-### 参考基线：最优固定策略
-
-在所有"三级订同样数量 q（或上游订 19）、零售商再订货点 rp"的固定策略中网格搜索（10 个种子），
-再在 50 个测试种子（100–149）上评估 episode 总成本（第 3 节的定义，不因缺货终止）：
-
-| 环境 | Bat10 | Bat7 | Bat3 | Sto0 | Sto01 | Sto1 |
-|---|---|---|---|---|---|---|
-| 最优 (q, rp) | (18, 6) | (19, 7) | (18, 7) | (18, 6) | (19, 6) | (19, 7) |
-| 总成本 | −71,840 | −75,260 | −77,800 | −94,000 | −63,640 | −84,680 |
-
----
-
-## 12. 扩展：增加一个智能体
-
-1. 在 `masc/agents/` 新建文件，从 `BaseAgent` 派生并设置参数（`holding_cost`、`processing_time`、
-   `fixed_service_time`、`action_nvec` 等），示例见 `base_agent.py` 的说明。
-2. 在 `masc/agents/__init__.py` 中导出。
-3. 在环境的 `make_agents()`（`masc/envs/base.py`，或在子类中覆盖）中按从上游到下游的顺序加入，
-   例如 `[Factory(), Warehouse(), Distributor(), Retailer()]`。
-
-观测空间、动作空间、成本、CSV 列、多智能体封装都会自动跟随智能体列表；最下游必须是 `Retailer`。
-
-增加一种网络结构（可插拔）：写一个 TorchRLModule（PPO 还要实现 `ValueFunctionAPI`），用
-`masc.models.register_model("<名字>", defaults={...})` 注册一个返回 `RLModuleSpec` 的函数，然后
-`build_ppo_config(env_config, model="<名字>", model_config={...})` 即可使用；再仿照 `masc/main_transformerPPO.py`
-写一个入口脚本、在 `pyproject.toml` 中登记命令，在网页界面 `masc.ui.server.COMMANDS` / `ALGORITHMS` 中登记一行，
-它就出现在训练页的算法列表里。
-
-增加一种需求：在 `masc/envs/` 中从 `POSingAgent1W1F` 派生并实现 `gen_demand()`，再在
-`masc.marl_env.ENV_IDS` / `ENV_SHORT_NAMES` 中登记一个环境 id，在 `masc.plotting.ENV_COLORS` 中给它一种颜色。
-
----
-
-## 13. 常见问题
-
-- **`masc-train: command not found`**：当前 conda 环境里没有安装包，运行 `pip install -e .`（在仓库根目录）。
-- **作业显示 FAILED**：没有 trial 收敛时 `masc-train` 退出码为 1，先看 `training_status.json` 和 `.out` 末尾；
-  `.err` 里有 `Traceback` 才是程序错误。
-- **`Failed to register worker to Raylet`**：多个作业同一时刻在同一节点启动 Ray，已由对象存储上限和自动重试处理；
-  如仍发生，重新提交失败的数组任务（`sbatch --array=1,2 ...`）。
-- **日志路径中的 `[64,64]`**：trial 目录名含方括号，Python `glob` 中要用 `glob.escape()`；
-  `MultiRLModule.from_checkpoint()` 需要绝对路径。
-- **旧的日志和配置**：以前的 `env_class` 写法（`AssembySto:Stocha_P1`、`AssembyBat:Batch_L10`）仍能解析；
-  旧日志可以直接用 `masc-plot` 重画。
-- **只能在 Mac 上看图**：把 `PPO_*.png` 和需要的日志 `rsync` 到本地，`pip install -e .` 后用 `masc-plot` 重画。
+- [Ray RLlib and Tune](https://docs.ray.io/) for multi-agent PPO, the RLModule API and the experiment management;
+  the transformer policy follows RLlib's
+  [attention net example](https://github.com/ray-project/ray/blob/ray-2.6.1/rllib/examples/attention_net.py).
+- E. Parisotto et al., *Stabilizing Transformers for Reinforcement Learning* (ICML 2020), for the gated transformer
+  (GTrXL).
+- [Gymnasium](https://gymnasium.farama.org/), [PyTorch](https://pytorch.org/),
+  [TensorBoard](https://www.tensorflow.org/tensorboard) and [Matplotlib](https://matplotlib.org/).
+- The Iridis High Performance Computing Facility of the University of Southampton, on which the experiments were run.

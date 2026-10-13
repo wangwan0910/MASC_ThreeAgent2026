@@ -497,6 +497,13 @@ const PRESETS = {
     "--total-timesteps": "50000", "--num-env-runners": "1", "--dir": "tu_test", "--tag": "test" },
 };
 
+// preset of an algorithm: Transformer PPO logs in tu2_* (as masc-train-transformer), PPO in tu_*
+function presetFor(kind, name) {
+  const p = { ...PRESETS[name] };
+  if (kind === "train_transformer" && p["--dir"]) p["--dir"] = p["--dir"].replace(/^tu_/, "tu2_");
+  return p;
+}
+
 // ---------------------------------------------------------------- local runs
 let logFile = null;
 function ago(t) { return t ? new Date(t * 1000).toLocaleTimeString() : ""; }
@@ -693,10 +700,10 @@ async function init() {
   document.querySelectorAll("input[name=algo]").forEach(r => r.addEventListener("change", () => {
     META.algorithms.forEach(a => { $("form-" + a.kind).style.display = a.kind === r.value ? "" : "none"; });
     refreshPreview.train(); }));
-  $("preset-paper").addEventListener("click", () => setValues(currentKind("train"), PRESETS.paper));
-  $("preset-quick").addEventListener("click", () => setValues(currentKind("train"), PRESETS.quick));
+  $("preset-paper").addEventListener("click", () => setValues(currentKind("train"), presetFor(currentKind("train"), "paper")));
+  $("preset-quick").addEventListener("click", () => setValues(currentKind("train"), presetFor(currentKind("train"), "quick")));
   $("preset-default").addEventListener("click", () => setValues(currentKind("train"), {}));
-  META.algorithms.forEach(a => setValues(a.kind, PRESETS.paper)); setValues("continual", {});
+  META.algorithms.forEach(a => setValues(a.kind, presetFor(a.kind, "paper"))); setValues("continual", {});
 
   $("jobs-refresh").addEventListener("click", loadJobs);
   jobsTimer = setInterval(() => { if ($("jobs-auto").checked && $("tab-jobs").classList.contains("active")) loadJobs(); }, 5000);
