@@ -238,43 +238,58 @@ def plot_run(logdir, label, out, lr=None, smoothing=0.6, xlim=XLIM, ylim=YLIM, e
     return out
 
 
-TAG = re.compile(r"^phase(\d+)_(\w+)/episode_return_mean$")
+TAG = re.compile(r"^phase(\d+)_(\w+)/(episode_return_mean|team_return)$")
+METRIC_LABELS = {"team_return": "Episode return (minus total cost)", "episode_return_mean": "Reward history (scaled)"}
 
 
 def read_phases(tb_dir):
-    """Phases of a continual learning run: [(phase number, env short name, steps, returns)] sorted by phase.
-    The continual learning writes one scalar per phase, "phase<i>_<env>/episode_return_mean"
-    (e.g. phase01_Sto1/episode_return_mean), with the cumulated environment steps as step."""
+    """Phases of a continual learning run: [(phase number, env short name, steps, returns)] sorted by phase."""
+    return read_phases_metric(tb_dir)[0]
+
+
+def read_phases_metric(tb_dir):
+    """(phases, metric): the continual learning writes per phase "phase<i>_<env>/team_return" (minus the total cost,
+    original cost units) and "phase<i>_<env>/episode_return_mean" (scaled rewards; the only one of older runs), with the
+    cumulated environment steps as step; team_return is used when it exists."""
     from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
     if not glob.glob(os.path.join(glob.escape(tb_dir), "events.out.tfevents.*")):
         raise FileNotFoundError(f"no TensorBoard logs in {tb_dir}")
     acc = EventAccumulator(tb_dir, size_guidance={"scalars": 0})
     acc.Reload()
-    phases = []
+    found = {}
     for tag in acc.Tags()["scalars"]:
         m = TAG.match(tag)
         if m:
             events = acc.Scalars(tag)
-            phases.append((int(m.group(1)), m.group(2), [e.step for e in events], [e.value for e in events]))
-    if not phases:
-        raise KeyError(f"no 'phase<i>_<env>/episode_return_mean' scalar in {tb_dir}")
-    return sorted(phases)
+            found.setdefault(m.group(3), []).append(
+                (int(m.group(1)), m.group(2), [e.step for e in events], [e.value for e in events]))
+    if not found:
+        raise KeyError(f"no 'phase<i>_<env>/team_return' or '.../episode_return_mean' scalar in {tb_dir}")
+    metric = "team_return" if "team_return" in found else "episode_return_mean"
+    return sorted(found[metric]), metric
 
 
-def plot_continual(tb_dir, out, title="Continuous agent reward curves for PPO"):
+def plot_continual(tb_dir, out, title="Continuous agent reward curves for PPO", phases_per_round=None):
     """Reward curves of a continual learning run: one segment per phase, coloured by environment (ENV_COLORS),
-    both axes in scientific notation."""
+    both axes in scientific notation; phases_per_round: dotted line and label at the start of every round."""
     fig, ax = plt.subplots(figsize=(12, 4))
+    phases, metric = read_phases_metric(tb_dir)
     labelled = set()
-    for _, env, steps, returns in read_phases(tb_dir):
+    for number, env, steps, returns in phases:
         ax.plot(steps, returns, color=ENV_COLORS.get(env), linewidth=0.6,
                 label=None if env in labelled else env)
         labelled.add(env)
+        if phases_per_round and steps and (number - 1) % phases_per_round == 0:
+            round_number = (number - 1) // phases_per_round + 1
+            if round_number > 1:
+                ax.axvline(steps[0], color="gray", linewidth=0.6, linestyle=":")
+            ax.annotate(f"round {round_number}", (steps[0], 1), xycoords=("data", "axes fraction"),
+                        xytext=(3, -12), textcoords="offset points", fontsize=8, color="gray")
     ax.set_title(title)
     ax.set_xlabel("Step")
-    ax.set_ylabel("Reward history")
+    ax.set_ylabel(METRIC_LABELS[metric])
     sci_axes(ax)
-    ax.legend(loc="upper left")
+    ax.legend(loc="lower right")
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
     print("figure", out)

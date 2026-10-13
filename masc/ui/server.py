@@ -254,13 +254,13 @@ def run_curves(root, rel_path):
     from ..plotting import align_curves
     run_dir = safe_path(root, rel_path)
     if os.path.isdir(os.path.join(run_dir, "tb")):     # continual learning run
-        from ..plotting import read_phases
-        phases = read_phases(os.path.join(run_dir, "tb"))
+        from ..plotting import METRIC_LABELS, read_phases_metric
+        phases, metric = read_phases_metric(os.path.join(run_dir, "tb"))
         series = []
         for number, env, steps, returns in phases:
             x, y = _downsample(list(steps), [float(v) for v in returns])
             series.append({"name": f"phase {number} {env}", "env": env, "x": x, "y": y})
-        return {"type": "continual", "series": series, "ylabel": "episode_return_mean (scaled)"}
+        return {"type": "continual", "series": series, "ylabel": METRIC_LABELS[metric]}
     series, groups = [], {}
     for trial in _trial_dirs(run_dir):
         try:

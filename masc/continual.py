@@ -133,11 +133,13 @@ def unique_path(path):
 
 
 def run_phases(lr, models_dir, phases, timesteps_per_phase=TIMESTEPS_PER_PHASE, num_env_runners=NUM_ENV_RUNNERS,
-               monitor=None):
+               monitor=None, env_settings=None):
     """Train all phases with one learning rate; returns (test reward of every phase, verdict of the monitor or
     None if the task went through). The remaining phases are skipped if the monitor stops the task.
     The training curve goes to TensorBoard (models_dir/tb), the x axis is the environment steps cumulated over the
-    phases (every phase builds a new algorithm, whose step counter starts at 0)."""
+    phases (every phase builds a new algorithm, whose step counter starts at 0): episode_return_mean (sum of the
+    agents' scaled rewards) and team_return (minus the total cost, original cost units) of every iteration.
+    env_settings: env_config settings of all the phases, e.g. {"max_stockout_days": 0}."""
     from torch.utils.tensorboard import SummaryWriter
     os.makedirs(models_dir, exist_ok=True)
     writer = SummaryWriter(os.path.join(models_dir, "tb"))
@@ -146,7 +148,7 @@ def run_phases(lr, models_dir, phases, timesteps_per_phase=TIMESTEPS_PER_PHASE, 
     test_rewards = {}
     verdict = None
     for i, (phase_name, env_id) in enumerate(phases, start=1):
-        env_config = {"env_class": env_id, "obs_rows": OBS_ROWS}
+        env_config = {"env_class": env_id, "obs_rows": OBS_ROWS, **(env_settings or {})}
         config = build_ppo_config(env_config, lr=lr, num_env_runners=num_env_runners, num_gpus=NUM_GPUS)
         algo = config.build_algo()
 
@@ -157,7 +159,7 @@ def run_phases(lr, models_dir, phases, timesteps_per_phase=TIMESTEPS_PER_PHASE, 
             algo.env_runner_group.sync_weights(from_worker_or_learner_group=algo.learner_group, inference_only=True)
 
         # train
-        tag = f"phase{i:02d}_{ENV_SHORT_NAMES[env_id]}/episode_return_mean"
+        tag = f"phase{i:02d}_{ENV_SHORT_NAMES[env_id]}"
         steps = 0
         if monitor:
             monitor.start_phase(i)
@@ -165,9 +167,12 @@ def run_phases(lr, models_dir, phases, timesteps_per_phase=TIMESTEPS_PER_PHASE, 
             result = algo.train()
             steps = result["env_runners"]["num_env_steps_sampled_lifetime"]
             ret = result["env_runners"].get("episode_return_mean")
+            team = result["env_runners"].get("team_return")
             if ret is not None:
-                writer.add_scalar(tag, ret, offset + steps)
-            print(f"[lr={lr} {i} {phase_name}] steps={steps} episode_return_mean={ret}")
+                writer.add_scalar(f"{tag}/episode_return_mean", ret, offset + steps)
+            if team is not None:
+                writer.add_scalar(f"{tag}/team_return", team, offset + steps)
+            print(f"[lr={lr} {i} {phase_name}] steps={steps} episode_return_mean={ret} team_return={team}")
             verdict = monitor.check(result, steps, timesteps_per_phase) if monitor else None
             if verdict:
                 verdict["phase_name"] = phase_name
@@ -203,6 +208,10 @@ def build_parser(prog=None):
     parser.add_argument("--out-dir", default=".", help="directory of the models and figures (default: current)")
     parser.add_argument("--lr", type=float, nargs="+", default=LRS, help="learning rate(s); several -> grid search")
     parser.add_argument("--timesteps-per-phase", type=int, default=TIMESTEPS_PER_PHASE, help="decisions per phase")
+    parser.add_argument("--max-stockout-days", type=int, default=None,
+                        help="terminate the episodes after this many stockout days (default: environment value 12)")
+    parser.add_argument("--no-stockout-termination", dest="max_stockout_days", action="store_const", const=0,
+                        help="never terminate on stockouts: every episode runs the T days (as masc-train)")
     parser.add_argument("--num-env-runners", type=int, default=NUM_ENV_RUNNERS, help="parallel sampling workers")
     parser.add_argument("--no-monitor", action="store_true", help="do not stop a task with a bad reward curve")
     parser.add_argument("--monitor-window", type=int, default=10, help="monitor: iterations per moving window")
@@ -238,22 +247,30 @@ def main(argv=None):
         lr_dir = os.path.join(models_dir, f"lr={lr}")
         monitor = None if args.no_monitor else ContinualMonitor(
             args.monitor_window, args.collapse_tol, args.collapse_patience, args.min_gain, args.no_learning_steps)
-        results[lr], verdict = run_phases(lr, lr_dir, phases, args.timesteps_per_phase, args.num_env_runners, monitor)
+        env_settings = {} if args.max_stockout_days is None else {"max_stockout_days": args.max_stockout_days}
+        results[lr], verdict = run_phases(lr, lr_dir, phases, args.timesteps_per_phase, args.num_env_runners, monitor,
+                                          env_settings)
         verdicts[lr] = verdict
         with open(os.path.join(lr_dir, "continual_status.json"), "w") as f:
-            json.dump({"task": args.task, "rounds": args.rounds, "lr": lr, "phases": [n for n, _ in phases],
+            json.dump({"task": args.task, "rounds": args.rounds, "lr": lr, "timesteps_per_phase": args.timesteps_per_phase,
+                       "env_settings": env_settings, "phases": [n for n, _ in phases],
                        "status": verdict["status"] if verdict else "completed", "verdict": verdict,
                        "test_rewards": results[lr]}, f, indent=2)
         # printed after every learning rate so that partial results are kept in the job output
         print(f"lr={lr} test rewards:", results[lr])
-        # reward curves of the task, e.g. PPOcon_10-7-3_r3_lr0.003_20261011-170501.png
+        # reward curves of the task (only at the end, nothing during the training), e.g.
+        # PPOcon_Sto0-Sto01-Sto1_5rounds_1Msteps-per-phase_lr0.0001_20261013-170501.png
+        envs = [ENV_SHORT_NAMES[e] for e in TASKS[args.task]]
+        per_phase = f"{args.timesteps_per_phase / 1e6:g}M"
         stopped = f"_STOPPED-{verdict['status']}" if verdict else ""
-        fig = unique_path(os.path.join(args.out_dir, f"PPOcon_{args.task}_r{args.rounds}_lr{lr:g}_{stamp}{stopped}.png"))
-        title = f"Continuous agent reward curves for PPO ({args.task}, lr {lr:g})"
+        fig = unique_path(os.path.join(args.out_dir, f"PPOcon_{'-'.join(envs)}_{args.rounds}rounds_{per_phase}steps-per-phase"
+                                                     f"_lr{lr:g}_{stamp}{stopped}.png"))
+        title = (f"Continual learning with PPO: {' → '.join(envs)}, {args.rounds} round(s) "
+                 f"({per_phase} steps per phase, lr {lr:g})")
         if verdict:
             title += f"\nSTOPPED in phase {verdict['phase']} ({verdict['phase_name']}): {verdict['status']}"
         try:
-            plot_continual(os.path.join(lr_dir, "tb"), fig, title=title)
+            plot_continual(os.path.join(lr_dir, "tb"), fig, title=title, phases_per_round=len(envs))
             shutil.copy(fig, lr_dir)
         except (FileNotFoundError, KeyError) as e:   # stopped before any finished episode
             print("no figure:", e)
