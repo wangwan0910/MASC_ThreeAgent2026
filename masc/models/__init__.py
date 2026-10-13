@@ -6,7 +6,6 @@ Every architecture is registered by name with its default settings; build_ppo_co
 model_config={...}) builds the RLModuleSpec of every agent from the registry:
 
     mlp          feed-forward network (PPO, masc-train)                         RLlib default module
-    lstm         LSTM network (recurrent PPO, masc-train-rppo)                  RLlib default module
     transformer  gated transformer over the last observations (masc-train-transformer), masc/models/transformer.py
 
 Adding an architecture: write a TorchRLModule (+ ValueFunctionAPI for PPO), register a builder that returns its
@@ -64,24 +63,13 @@ def _get(name):
 
 # ----- RLlib default modules -----
 
-def _default_spec(config, use_lstm):
-    from ray.rllib.core.rl_module.default_model_config import DefaultModelConfig
-    from ray.rllib.core.rl_module.rl_module import RLModuleSpec
-    return RLModuleSpec(model_config=DefaultModelConfig(
-        fcnet_hiddens=list(config["hiddens"]), fcnet_activation=config["activation"], vf_share_layers=False,
-        use_lstm=use_lstm, lstm_cell_size=config.get("lstm_cell_size", 64), max_seq_len=config.get("max_seq_len", 20)))
-
-
 @register_model("mlp", defaults={"hiddens": (64, 64), "activation": "tanh"})
 def mlp_spec(config):
     """Feed-forward policy and value networks (separate), RLlib default PPO module."""
-    return _default_spec(config, use_lstm=False)
-
-
-@register_model("lstm", defaults={"hiddens": (64, 64), "activation": "tanh", "lstm_cell_size": 64, "max_seq_len": 20})
-def lstm_spec(config):
-    """LSTM policy and value networks, RLlib default PPO module (use_lstm)."""
-    return _default_spec(config, use_lstm=True)
+    from ray.rllib.core.rl_module.default_model_config import DefaultModelConfig
+    from ray.rllib.core.rl_module.rl_module import RLModuleSpec
+    return RLModuleSpec(model_config=DefaultModelConfig(
+        fcnet_hiddens=list(config["hiddens"]), fcnet_activation=config["activation"], vf_share_layers=False))
 
 
 # architectures defined in their own modules register themselves on import

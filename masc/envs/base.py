@@ -271,14 +271,17 @@ class POSingAgent1W1F:
 
 
 # save the state history, action history, reward history, and demand history to a csv file for analysis and plotting.
-    def save_to_csv(self, filename=None):
+    def csv_fieldnames(self):
+        """Columns of save_to_csv: <agent>_<state field>, <agent>_<action field>, demand, cost, reorder day."""
         fieldnames = []
         for f in BaseAgent.STATE_FIELDS:
             fieldnames += [f"{a.name}_{STATE_CSV_NAMES[f]}" for a in self.agents]
         for f in BaseAgent.ACTION_FIELDS:
             fieldnames += [f"{a.name}_{ACTION_CSV_NAMES[f]}" for a in self.agents]
-        fieldnames += ["customer_demand", "Cost", "retailer_actionTriggerHistory"]
+        return fieldnames + ["customer_demand", "Cost", "retailer_actionTriggerHistory"]
 
+    def csv_rows(self):
+        """Rows of save_to_csv (dicts): row 0 is the initial state, row i the state after day i."""
         data = []
         for i in range(len(self.state_history)):
             row = {}
@@ -294,7 +297,10 @@ class POSingAgent1W1F:
             row["Cost"] = self.reward_history[i-1] if i > 0 else ""
             row["retailer_actionTriggerHistory"] = self.actionTriggerHistory[i-1] if i > 0 else ""
             data.append(row)
+        return data
 
+    def save_to_csv(self, filename=None):
+        fieldnames, data = self.csv_fieldnames(), self.csv_rows()
         with open(filename, 'w', newline="") as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()

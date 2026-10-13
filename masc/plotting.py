@@ -2,7 +2,7 @@
 """
 Figures of the masc package (masc-plot, masc-plot-continual).
 
-Training curve from the TensorBoard logs of a run (masc-train / masc-train-rppo), in the style of
+Training curve from the TensorBoard logs of a run (masc-train / masc-train-transformer), in the style of
 assets/PPO_demo.png:
 episode return of the supply chain against the environment steps, raw curve (light) and smoothed curve (dark,
 TensorBoard smoothing).

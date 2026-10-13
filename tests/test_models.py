@@ -19,7 +19,7 @@ def build(name, config=None, agent="retailer"):
 
 
 def test_registry():
-    assert {"mlp", "lstm", "transformer"} <= set(model_names())
+    assert {"mlp", "transformer"} <= set(model_names())
     with pytest.raises(ValueError):
         build_rl_module_spec("transformer", {"no_such_setting": 1})
     with pytest.raises(ValueError):
@@ -94,8 +94,6 @@ def test_ppo_config_and_pickle():
     # default (no model): the RLlib default modules, as before the registry
     mlp = build_ppo_config({"env_class": "BatSupplyEnv-v1"}).rl_module_spec.rl_module_specs["factory"]
     assert mlp.model_config.fcnet_hiddens == [64, 64] and not mlp.model_config.use_lstm
-    lstm = build_ppo_config({"env_class": "BatSupplyEnv-v1"}, use_lstm=True).rl_module_spec.rl_module_specs["factory"]
-    assert lstm.model_config.use_lstm and lstm.model_config.max_seq_len == 20
 
 
 def test_cli_parser():

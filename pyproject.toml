@@ -27,12 +27,12 @@ dev = ["pytest>=7"]
 
 [project.scripts]
 masc-train = "masc.train:main"
-masc-train-rppo = "masc.train_rppo:main"
 masc-train-transformer = "masc.main_transformerPPO:main"
 masc-continual = "masc.continual:main"
 masc-plot = "masc.plotting:main"
 masc-plot-continual = "masc.plotting:main_continual"
 masc-check = "masc.marl_env:main"
+masc-trajectory = "masc.trajectory:main"
 masc-ui = "masc.ui.server:main"
 
 [tool.setuptools.packages.find]

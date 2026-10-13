@@ -27,8 +27,8 @@ def test_build_argv_only_changed_values():
 
 
 def test_build_argv_uses_the_defaults_of_the_command():
-    assert ui.build_argv("train_rppo", {"--dir": "tu1"})[0] == []
-    assert ui.build_argv("train", {"--dir": "tu1"})[0] == ["--dir", "tu1"]
+    assert ui.build_argv("train_transformer", {"--dir": "tu2"})[0] == []
+    assert ui.build_argv("train", {"--dir": "tu2"})[0] == ["--dir", "tu2"]
 
 
 @pytest.mark.parametrize("values", [{"--lr": "abc"}, {"--reward-mode": "nobody"}, {"--unknown": "1"}])
@@ -150,7 +150,7 @@ def test_transformer_algorithm():
     assert argv == ["--memory", "30", "--head-hiddens", "32", "32"] and ns.tf_memory == 30
     cmd = ui.python_command("train_transformer", "BatSupplyEnv-v1", argv)
     assert cmd[1:5] == ["-m", "masc.main_transformerPPO", "--env", "BatSupplyEnv-v1"]
-    assert list(ui.ALGORITHMS) == ["train", "train_rppo", "train_transformer"]
+    assert list(ui.ALGORITHMS) == ["train", "train_transformer"]
 
 
 def test_seed_curves_with_drifting_steps():

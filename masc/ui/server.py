@@ -6,7 +6,7 @@ It is not connected to the Iridis cluster: on Iridis, use the commands (masc-tra
     masc-ui                    # results root = current directory; opens http://localhost:8765/?token=... in the browser
     masc-ui --root runs --port 8800 --no-browser
 
-Pages: training settings (masc-train / masc-train-rppo), continual learning settings (masc-continual), local runs,
+Pages: training settings (masc-train / masc-train-transformer), continual learning settings (masc-continual), local runs,
 results (training curves, figures, re-plotting; also results copied from Iridis with rsync) and an environment
 explorer (fixed policies).
 The forms are built from the command lines of masc.train / masc.continual (build_parser), so a new option appears in
@@ -70,16 +70,13 @@ GROUPS = {
 COMMANDS = {
     "train": {"module": "masc.train", "parser": lambda: train_mod.build_parser("PPO_pi=[64,64]_vf=[64,64]", "tu"),
               "item_option": "--env", "items": list(ENV_IDS)},
-    "train_rppo": {"module": "masc.train_rppo",
-                   "parser": lambda: train_mod.build_parser("RecurrentPPO_pi=64,64_vf=64,64_lstm=1", "tu1"),
-                   "item_option": "--env", "items": list(ENV_IDS)},
     "train_transformer": {"module": "masc.main_transformerPPO", "parser": transformer_mod.build_parser,
                           "item_option": "--env", "items": list(ENV_IDS)},
     "continual": {"module": "masc.continual", "parser": continual_mod.build_parser,
                   "item_option": "--task", "items": list(continual_mod.TASKS)},
 }
 # algorithms of the training page (commands above), in the order of the page
-ALGORITHMS = {"train": "PPO（MLP）", "train_rppo": "RPPO（LSTM）", "train_transformer": "Transformer PPO（GTrXL）"}
+ALGORITHMS = {"train": "PPO（MLP）", "train_transformer": "Transformer PPO（GTrXL）"}
 # options handled by the interface itself (environment / task, output directory = results root)
 HIDDEN = {"env", "task", "out_dir", "help"}
 
@@ -186,7 +183,8 @@ def find_runs(root, max_depth=4):
     for dirpath, dirnames, _ in os.walk(root):
         depth = dirpath[len(root):].count(os.sep)
         # do not descend into trial / checkpoint directories
-        dirnames[:] = [d for d in dirnames if not d.startswith(("PPO_", "RecurrentPPO", "checkpoint_", ".", "ray_"))
+        dirnames[:] = [d for d in dirnames
+                       if not d.startswith(("PPO_", "TransformerPPO", "TPPO_", "checkpoint_", ".", "ray_"))
                        and d not in ("tb", "__pycache__", "csv_results")]
         if depth >= max_depth:
             dirnames[:] = []

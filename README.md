@@ -48,9 +48,9 @@ MASC_Code/
 │   │   └── batch.py        批量需求：Batch_L10 / Batch_L7 / Batch_L3
 │   ├── marl_env.py         多智能体封装、环境编号、PPO 配置（build_ppo_config）、Ray 初始化
 │   ├── train.py            单环境训练、训练监控、制图与 CSV          → masc-train
-│   ├── train_rppo.py       同上，策略带 LSTM（Recurrent PPO）         → masc-train-rppo
 │   ├── main_transformerPPO.py  同上，策略为门控 Transformer（GTrXL 式）  → masc-train-transformer
-│   ├── models/             可插拔的网络结构注册表：mlp、lstm、transformer（transformer.py）
+│   ├── models/             可插拔的网络结构注册表：mlp、transformer（transformer.py）
+│   ├── trajectory.py       训练好的策略的轨迹 CSV（每个种子一个 100 天 episode）  → masc-trajectory
 │   ├── continual.py        环境之间的连续学习（6 个任务）              → masc-continual
 │   └── plotting.py         训练曲线（单 trial / 多种子均值±std）、连续学习曲线 → masc-plot / masc-plot-continual
 ├── jobs/                   SLURM 作业脚本：job_train.sh（6 个环境）、job_continual.sh（6 个任务）
@@ -156,7 +156,7 @@ MASC_Code/
 | grad_clip | 0.5 | |
 | train_batch_size / minibatch / epochs | 2048 / 256 / 5 | 每次迭代 40 步 SGD |
 | seed | `None` | 网络与需求的随机种子 |
-| model / model_config | `mlp`（`use_lstm=True` 时 `lstm`） | 智能体的网络：`masc.models` 注册表中的名字及其设置 |
+| model / model_config | `mlp` | 智能体的网络：`masc.models` 注册表中的名字（`mlp`、`transformer`）及其设置 |
 
 ---
 
@@ -192,12 +192,12 @@ pip install git+https://github.com/wangwan0910/MASC_ThreeAgent2026.git  # 直接
 | 命令 | 等价于 | 作用 |
 |---|---|---|
 | `masc-train` | `python -m masc.train` | 单环境多智能体 PPO 训练 |
-| `masc-train-rppo` | `python -m masc.train_rppo` | 同上，策略带 LSTM |
 | `masc-train-transformer` | `python -m masc.main_transformerPPO` | 同上，策略为门控 Transformer |
 | `masc-continual` | `python -m masc.continual` | 连续学习 |
 | `masc-plot` | `python -m masc.plotting` | 从 TensorBoard 日志重画训练曲线 |
 | `masc-plot-continual` | — | 重画连续学习曲线 |
 | `masc-check` | `python -m masc.marl_env` | 检查 6 个环境能否运行 |
+| `masc-trajectory` | `python -m masc.trajectory` | 从已有的运行生成轨迹 CSV（第 9 节） |
 | `masc-ui` | `python -m masc.ui.server` | 网页界面，仅 Mac 本地（第 8a 节） |
 
 每个命令都有 `--help`。
@@ -238,15 +238,14 @@ masc-train --env BatSupplyEnv-v3 --no-stockout-termination --lr 0.0003 0.0001
 tensorboard --logdir tu_logs      # 查看训练过程
 ```
 
-### 三种算法
+### 两种算法
 
 | 算法 | 命令 | 网络（`masc.models` 中的名字） | 图名前缀 | 默认日志目录 |
 |---|---|---|---|---|
 | PPO | `masc-train` | `mlp`：策略、价值各一个 MLP 64×64 | `PPO_` | `tu_logs/` |
-| Recurrent PPO | `masc-train-rppo` | `lstm`：LSTM 64 + MLP，序列长度 20 | `RPPO_` | `tu1_logs/` |
 | Transformer PPO | `masc-train-transformer` | `transformer`：门控 Transformer（GTrXL 式） | `TPPO_` | `tu2_logs/` |
 
-三个命令的参数、训练监控、多种子、制图和 CSV 完全相同；`masc-train-transformer` 另有一组 Transformer 参数。
+两个命令的参数、训练监控、多种子、制图和 CSV 完全相同；`masc-train-transformer` 另有一组 Transformer 参数。
 
 **Transformer PPO**（`masc/models/transformer.py`、`masc/main_transformerPPO.py`）参照 RLlib 的
 [attention_net.py](https://github.com/ray-project/ray/blob/ray-2.6.1/rllib/examples/attention_net.py)（PPO + GTrXL，
@@ -331,7 +330,7 @@ masc-train-transformer --env StoSupplyEnv-v3 --no-stockout-termination --memory 
 
 训练结束后，`masc-train` 自动画出 `PPO_<环境>.png`：**5 个种子的均值为实线，均值 ± 标准差为浅色阴影**
 （风格同 `assets/PPO_demo.png`）。多个学习率时，选种子平均最终回报最好的那个学习率。曲线 CSV 保存
-`team_return_mean`、`team_return_std`、`n_seeds`；轨迹 CSV 取最好的那个种子。
+`team_return_mean`、`team_return_std`、`n_seeds`；轨迹 CSV 包含这个学习率的每个种子（第 9 节）。
 
 手动重画：
 
@@ -353,15 +352,13 @@ masc-plot tu_team_logs/Bat10/<时间戳> --lr 0.0003 ...                # 单 tr
 | `jobs/job_continual.sh` | 0-01-1 | 1-01-0 | 3-7-10 | 10-7-3 | bat10-sto1 | sto1-bat10 |
 
 `job_train.sh` 默认传入 `--reward-mode $REWARD_MODE --no-stockout-termination --dir tu_$REWARD_MODE`
-（`REWARD_MODE` 默认 `team`；`ALGO=rppo` 时用 `masc-train-rppo`，日志前缀 `tu1_`；`ALGO=transformer` 时用
-`masc-train-transformer`，日志前缀 `tu2_`）；`sbatch` 后面的参数原样传给
+（`REWARD_MODE` 默认 `team`；`ALGO=transformer` 时用 `masc-train-transformer`，日志前缀 `tu2_`）；`sbatch` 后面的参数原样传给
 `masc-train`，并且排在默认参数之后，可以覆盖它们。
 
 ```bash
 mkdir -p runs && cd runs
 sbatch ../jobs/job_train.sh                                   # 六个环境，PPO，团队奖励
 sbatch --array=0-2 ../jobs/job_train.sh                       # 只跑批量需求环境
-ALGO=rppo sbatch ../jobs/job_train.sh                         # Recurrent PPO
 ALGO=transformer sbatch ../jobs/job_train.sh                  # Transformer PPO
 REWARD_MODE=individual sbatch ../jobs/job_train.sh            # 个体奖励，日志在 tu_individual_logs/
 sbatch ../jobs/job_train.sh --seeds 0 1 2 3 4 --lr 0.0001 --no-early-stop \
@@ -423,7 +420,7 @@ mkdir -p runs && masc-ui --root runs          # 自动在浏览器中打开 http
 
 | 页面 | 功能 |
 |---|---|
-| 训练 | 勾选环境、选择 PPO / RPPO / Transformer PPO（每种算法一张表单）；参数表单由 `masc-train` 的命令行自动生成（新增参数自动出现，修改过的值高亮）；预设"论文设置 / 快速测试"；实时预览完整命令；提交后在本机运行 |
+| 训练 | 勾选环境、选择 PPO / Transformer PPO（每种算法一张表单）；参数表单由 `masc-train` 的命令行自动生成（新增参数自动出现，修改过的值高亮）；预设"论文设置 / 快速测试"；实时预览完整命令；提交后在本机运行 |
 | 连续学习 | 勾选任务（6 个），参数同 `masc-continual` |
 | 运行 | 本机运行队列：状态、当前环境、退出码、日志（自动刷新）、取消 |
 | 结果 | 结果目录下所有运行（单环境训练、连续学习，运行中的也会显示）；交互式训练曲线（多种子显示均值 ± std 阴影）、trial 状态与 `would_stop`、运行目录里的图；用 `masc-plot` 重新制图 |
@@ -449,7 +446,21 @@ mkdir -p runs && masc-ui --root runs          # 自动在浏览器中打开 http
 | 训练结论 | `<dir>_logs/<环境>/<时间戳>/training_status.json` | 每个 trial 的 lr、seed、status、steps、reason、would_stop、checkpoint |
 | 训练曲线图 | `<out-dir>/PPO_<环境>[_<tag>].png`（日志目录里有副本） | 单 trial 或多种子均值 ± std |
 | 曲线 CSV | `<out-dir>/csv_results/<tag>_curve.csv` | step, team_return(_smoothed) 或 team_return_mean/std/n_seeds |
-| 轨迹 CSV | `<out-dir>/csv_results/<tag>_seed<k>_trajectory.csv` | 确定性策略跑一个 episode：每天的状态、动作、需求、成本（`Cost` 列之和 = episode 总成本） |
+| 轨迹 CSV | `<out-dir>/csv_results/<tag>_trajectory.csv` | 训练结束（收敛）后的策略：每个种子用确定性动作跑一个 100 天的 episode，5 个种子共 500 行（见下） |
+
+**轨迹 CSV**（`masc/trajectory.py`）只保存训练好的策略的数据，不含训练过程：图中那个学习率的每个种子（trial）
+取最终的 checkpoint，用确定性动作跑一个 T = 100 天的 episode，需求序列用这个种子本身生成（`--csv-seed` 可让所有种子
+用同一个需求种子），全部写进一个文件（5 个种子 → 500 行）。列：
+
+| 列 | 含义 |
+|---|---|
+| `seed`、`demand_seed`、`day` | 训练种子、episode 的需求种子、第几天（1–100） |
+| `<智能体>_<状态>` | 当天结束时的状态：inventory、reorderpoint、pendingDelivery、daysDelivery、stockout_cum、processingTimes、stockout_daily、capacity、stockout_total |
+| `<智能体>_<动作>` | 补货日执行的动作：serviceTime、orderToSupplier、reorderPoint（非补货日为 0） |
+| `customer_demand`、`Cost`、`retailer_actionTriggerHistory` | 当天需求；当天记账的成本（负数，每个种子 100 天之和 = episode 总成本）；是否补货日（1） |
+
+已有的运行可以用 `masc-trajectory` 重新生成，例如
+`masc-trajectory runs/tu_seeds_logs/Bat10/<时间戳>`（写到 `runs/csv_results/`，`--out` 指定文件名）。
 
 CSV 文件名：`<算法>_<环境>[_<tag>]_<需求>_lr<lr>_<网络>_<步数>Msteps[_<n>seeds]_<日期时间>`，
 例如 `PPO_Sto1_mu2-std1_lr0.0001_mlp64x64_2Msteps_5seeds_20261012-170501_curve.csv`，从不覆盖旧文件。

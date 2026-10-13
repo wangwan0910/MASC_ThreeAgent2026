@@ -456,7 +456,7 @@ function selectedItems(container) { return [...container.querySelectorAll("input
 function currentKind(tab) { return tab === "train" ? document.querySelector("input[name=algo]:checked").value : "continual"; }
 function request(tab) {
   const kind = currentKind(tab), formKind = kind;
-  // only the values changed in the form: the command compares them with its own defaults (RPPO: --dir tu1)
+  // only the values changed in the form: the command compares them with its own defaults (Transformer PPO: --dir tu2)
   const values = {};
   for (const [opt, { field }] of Object.entries(FORMS[formKind].inputs)) {
     const v = FORMS[formKind].values[opt];

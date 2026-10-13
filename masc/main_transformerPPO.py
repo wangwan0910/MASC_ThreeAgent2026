@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Multi-agent Transformer + PPO (third algorithm, after PPO with MLP policies and recurrent PPO with LSTM policies)
+Multi-agent Transformer + PPO (second algorithm, compared with PPO with MLP policies, masc-train)
 on one supply chain environment: every stage has its own gated transformer policy (masc/models/transformer.py,
 model "transformer" of the masc.models registry), in the manner of RLlib's attention net example
 (ray-2.6.1/rllib/examples/attention_net.py: PPO + GTrXL, use_attention).

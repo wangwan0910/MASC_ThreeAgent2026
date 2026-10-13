@@ -262,14 +262,14 @@ def init_ray(**kwargs):
     ray.init(runtime_env={"env_vars": {"PYTHONPATH": pythonpath}}, ignore_reinit_error=True, **kwargs)
 
 
-def build_ppo_config(env_config, lr=3e-4, hiddens=(64, 64), use_lstm=False, lstm_cell_size=64, max_seq_len=20,
+def build_ppo_config(env_config, lr=3e-4, hiddens=(64, 64),
                      num_env_runners=1, num_envs_per_env_runner=1, num_gpus=0,
                      train_batch_size=2048, minibatch_size=256, num_epochs=5, entropy_coeff=0.01,
                      vf_clip_param=10.0, clip_params=None, seed=None, model=None, model_config=None):
     """Multi-agent PPO config: one independent policy (RLModule) per supply chain stage.
-    model: network of the agents, a name of the masc.models registry ("mlp", "lstm", "transformer", ...), with its
-        settings model_config (dict, unset settings keep the defaults of the model). Default: "lstm" if use_lstm
-        else "mlp", with hiddens / lstm_cell_size / max_seq_len.
+    model: network of the agents, a name of the masc.models registry ("mlp", "transformer", ...), with its settings
+        model_config (dict, unset settings keep the defaults of the model). Default: "mlp" with the hidden layers
+        `hiddens`.
     Compared with the stable-baselines3 PPO defaults used before (minibatch 64, 10 epochs, no entropy bonus), the
     updates are gentler (320 -> 40 SGD steps per iteration) and the entropy bonus keeps the policies from becoming
     deterministic too early (the collapses of the first runs followed KL spikes of near-deterministic policies).
@@ -287,9 +287,8 @@ def build_ppo_config(env_config, lr=3e-4, hiddens=(64, 64), use_lstm=False, lstm
 
     agent_ids = SupplyChainMARLEnv(env_config).possible_agents
     if model is None:
-        model = "lstm" if use_lstm else "mlp"
-        model_config = {"hiddens": tuple(hiddens), **({"lstm_cell_size": lstm_cell_size, "max_seq_len": max_seq_len}
-                                                       if use_lstm else {}), **(model_config or {})}
+        model = "mlp"
+        model_config = {"hiddens": tuple(hiddens), **(model_config or {})}
 
     return (
         PPOConfig()
@@ -314,7 +313,7 @@ def build_ppo_config(env_config, lr=3e-4, hiddens=(64, 64), use_lstm=False, lstm
 def evaluate(algo, env_config, n_steps=1000):
     """Run the trained (deterministic) policies for n_steps decisions, return the mean episode team reward
     (total cost of the supply chain, same as the episode return of the original single-planner environment).
-    Only for feed-forward policies (no LSTM state)."""
+    Only for feed-forward policies (no recurrent / transformer state)."""
     import torch
     env = SupplyChainMARLEnv(env_config)
     modules = {aid: algo.get_module(aid) for aid in env.possible_agents}

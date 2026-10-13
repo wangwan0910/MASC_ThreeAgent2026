@@ -24,9 +24,11 @@ directory instead) and the script exits with code 1. The status of every trial i
 
 CSV data (only for a converged trial, never for the continual learning scripts), in <out-dir>/csv_results/ (--csv-dir):
     <tag>_curve.csv       : training curve of the figure (step, team return, smoothed team return)
-    <tag>_trajectory.csv  : one deterministic episode of the trained policies (state, action, demand and cost of every
-                            day, save_to_csv of the environment), demand seed --csv-seed
-    tag = <algo>_<env>_<demand>_lr<lr>_<network>_<steps at convergence>_<date-time>,
+    <tag>_trajectory.csv  : the trained (converged) policies of every seed of the best learning rate, one
+                            deterministic episode of T = 100 days each (5 seeds: 500 rows): seed, demand_seed, day,
+                            state, action, demand and cost of every day, see masc/trajectory.py; the demand of the
+                            episode of a seed is drawn with that seed (or --csv-seed). Also: masc-trajectory <run>
+    tag = <algo>_<env>_<demand>_lr<lr>_<network>_<steps at convergence>[_<n>seeds]_<date-time>,
     e.g. PPO_Sto1_mu2-std1_lr0.0003_mlp64x64_1.65Msteps_20261011-170501. A new run never overwrites an older file
     (date-time in the name, and a _2, _3 ... suffix if the name already exists).
 
@@ -50,15 +52,13 @@ from collections import defaultdict
 import numpy as np
 from ray import tune
 
-from .marl_env import (DEFAULT_REWARD_SCALE, ENV_SHORT_NAMES, REWARD_MODES, SupplyChainMARLEnv,
-                       build_ppo_config, init_ray)
+from .marl_env import DEFAULT_REWARD_SCALE, ENV_SHORT_NAMES, REWARD_MODES, build_ppo_config, init_ray
 from .plotting import plot_run, plot_seeds, select_trial, smooth
-
-PLOTTED = ("converged", "completed")   # verdicts of the trials whose figure / CSV are written
+from .trajectory import PLOTTED, demand_tag, print_summary, unique_path, write_trajectories
 
 
 def build_parser(default_name="PPO", default_dir="tu", prog=None):
-    """Command line of masc-train / masc-train-rppo (also used by the web interface, masc.ui, to build its form)."""
+    """Command line of masc-train / masc-train-transformer (also used by the web interface, masc.ui, to build its form)."""
     parser = argparse.ArgumentParser(prog=prog)
     parser.add_argument("--env", required=True,
                         help="environment id (" + ", ".join(f"{k} = {v}" for k, v in ENV_SHORT_NAMES.items())
@@ -116,7 +116,8 @@ def build_parser(default_name="PPO", default_dir="tu", prog=None):
                         help="directory of the logs (<dir>_logs/), figures and CSV files (default: current directory)")
     parser.add_argument("--csv-dir", default=None,
                         help="CSV data of converged trials (training curve, trajectory of one episode)")
-    parser.add_argument("--csv-seed", type=int, default=0, help="demand seed of the episode saved as trajectory CSV")
+    parser.add_argument("--csv-seed", type=int, default=None,
+                        help="demand seed of the episodes of the trajectory CSV (default: the seed of every trial)")
     parser.add_argument("--checkpoint-freq", type=int, default=50, help="checkpoint every n training iterations")
     parser.add_argument("--num-env-runners", type=int, default=1)
     parser.add_argument("--num-gpus", type=float, default=0, help="GPUs for the learner, e.g. 1 on the cluster")
@@ -287,56 +288,10 @@ def env_short_name(env):
     return ENV_SHORT_NAMES.get(env, env.split(":")[-1])
 
 
-def demand_tag(env_config):
-    """Demand setting of the environment for the file names, e.g. mu2-std1 (stochastic), mu2-std0.1-batch10 (batch)."""
-    env = SupplyChainMARLEnv(env_config).env
-    tag = f"mu{env.muDemand:g}-std{env.stdDemand:g}"
-    return tag + (f"-batch{env.batch_size}" if hasattr(env, "batch_size") else "")
-
-
-def unique_path(path):
-    """path, or path with _2, _3 ... before the extension if it exists already (never overwrite an older file)."""
-    root, ext = os.path.splitext(path)
-    k = 1
-    while os.path.exists(path):
-        k += 1
-        path = f"{root}_{k}{ext}"
-    return path
-
-
-def rollout_episode(checkpoint, env_config, seed=0):
-    """One episode of the trained policies (deterministic actions, LSTM state carried for the recurrent policies).
-    Returns the wrapped single-planner environment, whose histories hold the whole episode."""
-    import torch
-    import tree
-    from ray.rllib.core.rl_module.multi_rl_module import MultiRLModule
-    modules = MultiRLModule.from_checkpoint(os.path.join(checkpoint, "learner_group", "learner", "rl_module"))
-    env = SupplyChainMARLEnv(env_config)
-    obs, _ = env.reset(seed=seed)
-    states = {aid: tree.map_structure(lambda x: torch.as_tensor(x)[None], modules[aid].get_initial_state())
-              for aid in env.possible_agents if modules[aid].is_stateful()}
-    done = False
-    with torch.no_grad():
-        while not done:
-            actions = {}
-            for aid in env.possible_agents:
-                module, o = modules[aid], torch.from_numpy(obs[aid])[None]
-                batch = {"obs": o[:, None], "state_in": states[aid]} if aid in states else {"obs": o}
-                out = module.forward_inference(batch)
-                logits = out["action_dist_inputs"]
-                if aid in states:
-                    states[aid], logits = out["state_out"], logits[:, 0]   # remove the time dimension
-                dist = module.get_inference_action_dist_cls().from_logits(logits)
-                actions[aid] = dist.to_deterministic().sample()[0].numpy()
-            obs, _, terminateds, truncateds, _ = env.step(actions)
-            done = terminateds["__all__"] or truncateds["__all__"]
-    return env.env
-
-
-def save_csv(args, logdir, best, algo, net, seed_curve=None):
-    """CSV data of the converged trial `best`: training curve and the trajectory of one episode, see the docstring.
-    seed_curve: (steps, mean, std, seeds, lr) of plotting.plot_seeds: the curve CSV holds the mean and the std of the
-    seeds instead of the curve of `best` (the trajectory is the one of `best`, the best seed)."""
+def save_csv(args, logdir, best, algo, net, seed_curve=None, trials=None):
+    """CSV data, see the module docstring: training curve (of `best`, or the mean and the std of the seeds with
+    seed_curve = (steps, mean, std, seeds, lr) of plotting.plot_seeds) and the trajectories of the trained policies of
+    `trials` (default: [best]), one episode per trial."""
     env_config = env_config_from_args(args)
     steps_m = f"{best['steps'] / 1e6:.2f}".rstrip("0").rstrip(".")
     seeds = f"_{len(seed_curve[3])}seeds" if seed_curve else ""
@@ -357,11 +312,9 @@ def save_csv(args, logdir, best, algo, net, seed_curve=None):
             writer.writerow(["step", "team_return", "team_return_smoothed"])
             writer.writerows(zip(steps.astype(int), returns, smooth(returns)))
 
-    trajectory = unique_path(os.path.join(args.csv_dir, f"{tag}_seed{args.csv_seed}_trajectory.csv"))
-    env = rollout_episode(best["checkpoint"], env_config, seed=args.csv_seed)
-    env.save_to_csv(trajectory)
-    # total cost of the episode, same definition as team_return (the Cost column adds up to it, see marl_env.py)
-    print(f"csv: {curve}\ncsv: {trajectory} ({env.day} days, total cost {-sum(env.reward_history):.1f})")
+    print(f"csv: {curve}")
+    trajectory = unique_path(os.path.join(args.csv_dir, f"{tag}_trajectory.csv"))
+    print_summary(trajectory, write_trajectories(trajectory, trials or [best], env_config, args.csv_seed))
     return curve, trajectory
 
 
@@ -433,7 +386,9 @@ def train(args, config, algo="PPO", net="mlp64x64"):
         out = plot_run(logdir, label=label, out=out, lr=best["lr"], env=env_short_name(args.env))
     print("best lr:", best["lr"], "seed:", best["seed"], "checkpoint:", best["checkpoint"])
     shutil.copy(out, logdir)
-    save_csv(args, logdir, best, algo, net, seed_curve=seed_curve)
+    # trajectories of the trained policies of every seed of the plotted learning rate
+    trials = [s for s in converged if s["lr"] == best["lr"]]
+    save_csv(args, logdir, best, algo, net, seed_curve=seed_curve, trials=trials)
     return results, status
 
 def main(argv=None):
