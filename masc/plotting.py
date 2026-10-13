@@ -269,22 +269,17 @@ def read_phases_metric(tb_dir):
     return sorted(found[metric]), metric
 
 
-def plot_continual(tb_dir, out, title="Continuous agent reward curves for PPO", phases_per_round=None):
-    """Reward curves of a continual learning run: one segment per phase, coloured by environment (ENV_COLORS),
-    both axes in scientific notation; phases_per_round: dotted line and label at the start of every round."""
-    fig, ax = plt.subplots(figsize=(12, 4))
-    phases, metric = read_phases_metric(tb_dir)
-    labelled = set()
-    for number, env, steps, returns in phases:
-        ax.plot(steps, returns, color=ENV_COLORS.get(env), linewidth=0.6,
-                label=None if env in labelled else env)
-        labelled.add(env)
-        if phases_per_round and steps and (number - 1) % phases_per_round == 0:
-            round_number = (number - 1) // phases_per_round + 1
-            if round_number > 1:
-                ax.axvline(steps[0], color="gray", linewidth=0.6, linestyle=":")
-            ax.annotate(f"round {round_number}", (steps[0], 1), xycoords=("data", "axes fraction"),
-                        xytext=(3, -12), textcoords="offset points", fontsize=8, color="gray")
+def _round_mark(ax, number, start, phases_per_round):
+    """Dotted line and label "round k" at the start of every round of a continual learning figure."""
+    if phases_per_round and (number - 1) % phases_per_round == 0:
+        round_number = (number - 1) // phases_per_round + 1
+        if round_number > 1:
+            ax.axvline(start, color="gray", linewidth=0.6, linestyle=":")
+        ax.annotate(f"round {round_number}", (start, 1), xycoords=("data", "axes fraction"),
+                    xytext=(3, -12), textcoords="offset points", fontsize=8, color="gray")
+
+
+def _finish_continual(fig, ax, out, title, metric):
     ax.set_title(title)
     ax.set_xlabel("Step")
     ax.set_ylabel(METRIC_LABELS[metric])
@@ -296,14 +291,100 @@ def plot_continual(tb_dir, out, title="Continuous agent reward curves for PPO", 
     return out
 
 
+def plot_continual(tb_dir, out, title="Continuous agent reward curves for PPO", phases_per_round=None):
+    """Reward curves of a continual learning run: one segment per phase, coloured by environment (ENV_COLORS),
+    both axes in scientific notation; phases_per_round: dotted line and label at the start of every round."""
+    fig, ax = plt.subplots(figsize=(12, 4))
+    phases, metric = read_phases_metric(tb_dir)
+    labelled = set()
+    for number, env, steps, returns in phases:
+        ax.plot(steps, returns, color=ENV_COLORS.get(env), linewidth=0.6,
+                label=None if env in labelled else env)
+        labelled.add(env)
+        if steps:
+            _round_mark(ax, number, steps[0], phases_per_round)
+    return _finish_continual(fig, ax, out, title, metric)
+
+
+def seed_tb_dirs(run_dir, lr=None):
+    """TensorBoard directories of the seeds of a continual learning experiment: <run_dir>/seed=<s>/lr=<lr>/tb
+    (masc-continual --seed <s> --run-name <name>), {seed: tb dir}, of the learning rate lr (default: the only one)."""
+    found = {}
+    for tb in glob.glob(os.path.join(glob.escape(run_dir), "seed=*", "lr=*", "tb")):
+        seed = int(os.path.basename(os.path.dirname(os.path.dirname(tb)))[len("seed="):])
+        tb_lr = float(os.path.basename(os.path.dirname(tb))[len("lr="):])
+        if lr is None or math.isclose(tb_lr, lr):
+            found.setdefault(tb_lr, {})[seed] = tb
+    if not found:
+        raise FileNotFoundError(f"no seed=<s>/lr=<lr>/tb directory under {run_dir}")
+    if len(found) > 1:
+        raise ValueError(f"several learning rates under {run_dir}: {sorted(found)}, choose one with lr")
+    return dict(sorted(next(iter(found.values())).items()))
+
+
+def continual_seed_phases(run_dir, lr=None):
+    """Phases of the seeds of a continual learning experiment: ([(phase number, env, steps, mean, std, n seeds)],
+    metric, seeds). The curves of a phase are interpolated on a common step grid (align_curves): the cumulated steps
+    of the seeds differ a little (some iterations sample more steps)."""
+    per_seed = {seed: read_phases_metric(tb) for seed, tb in seed_tb_dirs(run_dir, lr).items()}
+    metrics = {m for _, m in per_seed.values()}
+    if len(metrics) > 1:
+        raise ValueError(f"the seeds under {run_dir} logged different metrics: {sorted(metrics)}")
+    metric = metrics.pop()
+    curves = {}
+    for phases, _ in per_seed.values():
+        for number, env, steps, returns in phases:
+            if steps:
+                curves.setdefault((number, env), []).append((steps, returns))
+    result = []
+    for (number, env), cs in sorted(curves.items()):
+        grid, values = align_curves(cs)
+        result.append((number, env, grid, values.mean(axis=0), values.std(axis=0), len(cs)))
+    return result, metric, sorted(per_seed)
+
+
+def plot_continual_seeds(run_dir, out, title, phases_per_round=None, lr=None):
+    """Continual learning, several seeds: mean of the seeds (line) and mean +- std (light band) of every phase,
+    coloured by environment, in the style of assets/dcontinustoPPO2_2.png."""
+    phases, metric, seeds = continual_seed_phases(run_dir, lr)
+    fig, ax = plt.subplots(figsize=(12, 4))
+    labelled = set()
+    for number, env, steps, mean, std, n in phases:
+        color = ENV_COLORS.get(env)
+        ax.fill_between(steps, mean - std, mean + std, color=color, alpha=0.25, linewidth=0)
+        ax.plot(steps, mean, color=color, linewidth=0.8, label=None if env in labelled else env)
+        labelled.add(env)
+        if len(steps):
+            _round_mark(ax, number, steps[0], phases_per_round)
+    incomplete = [(number, n) for number, _, _, _, _, n in phases if n < len(seeds)]
+    if incomplete:
+        print(f"WARNING: phases with fewer than {len(seeds)} seeds (phase, seeds): {incomplete}")
+    return _finish_continual(fig, ax, out, title, metric)
+
+
 def main_continual(argv=None):
-    """masc-plot-continual: reward curves of a continual learning run."""
-    parser = argparse.ArgumentParser()
-    parser.add_argument("tb_dir", help="TensorBoard directory of a continual learning run, e.g. <models_dir>/lr=<lr>/tb")
-    parser.add_argument("--out", default="PPOcon.png")
-    parser.add_argument("--title", default="Continuous agent reward curves for PPO")
+    """masc-plot-continual: reward curves of a continual learning run (one tb directory), or with --seeds of all the
+    seeds of an experiment (directory with seed=<s>/lr=<lr>/tb), named and titled from its continual_status.json."""
+    parser = argparse.ArgumentParser(prog="masc-plot-continual")
+    parser.add_argument("path", help="TensorBoard directory of a run (<models_dir>/lr=<lr>/tb), or with --seeds the "
+                                     "directory of the experiment (<models dir>/<task>/<run name>)")
+    parser.add_argument("--seeds", action="store_true", help="mean +- std of the seeds of the experiment")
+    parser.add_argument("--lr", type=float, default=None, help="--seeds: learning rate (default: the only one)")
+    parser.add_argument("--out", default=None, help="figure file (default: PPOcon.png, --seeds: name from the "
+                                                    "settings of the experiment, in the current directory)")
+    parser.add_argument("--title", default=None)
     a = parser.parse_args(argv)
-    plot_continual(a.tb_dir, a.out, a.title)
+    if not a.seeds:
+        plot_continual(a.path, a.out or "PPOcon.png", a.title or "Continuous agent reward curves for PPO")
+        return 0
+    from .continual import TASKS, figure_name, figure_title
+    tbs = seed_tb_dirs(a.path, a.lr)
+    with open(os.path.join(os.path.dirname(next(iter(tbs.values()))), "continual_status.json")) as f:
+        st = json.load(f)
+    name = (st["task"], st["rounds"], st["timesteps_per_phase"], st["lr"])
+    out = a.out or figure_name(*name, st.get("run_name") or os.path.basename(a.path), n_seeds=len(tbs))
+    plot_continual_seeds(a.path, out, a.title or figure_title(*name, n_seeds=len(tbs)),
+                         phases_per_round=len(TASKS[st["task"]]), lr=a.lr)
     return 0
 
 

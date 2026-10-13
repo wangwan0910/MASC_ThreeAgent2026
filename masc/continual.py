@@ -122,6 +122,22 @@ class ContinualMonitor:
         return None
 
 
+def figure_name(task, rounds, timesteps_per_phase, lr, stamp, seed=None, n_seeds=None, suffix=""):
+    """File name of a continual learning figure, e.g.
+    PPOcon_Sto0-Sto01-Sto1_3rounds_1Msteps-per-phase_lr0.0001_5seeds_<stamp>.png (n_seeds: figure of several seeds)."""
+    envs = "-".join(ENV_SHORT_NAMES[e] for e in TASKS[task])
+    seeds = f"_{n_seeds}seeds" if n_seeds else (f"_seed{seed}" if seed is not None else "")
+    return (f"PPOcon_{envs}_{rounds}rounds_{timesteps_per_phase / 1e6:g}Msteps-per-phase_lr{lr:g}{seeds}"
+            f"_{stamp}{suffix}.png")
+
+
+def figure_title(task, rounds, timesteps_per_phase, lr, seed=None, n_seeds=None):
+    envs = " → ".join(ENV_SHORT_NAMES[e] for e in TASKS[task])
+    seeds = f", mean ± std of {n_seeds} seeds" if n_seeds else (f", seed {seed}" if seed is not None else "")
+    return (f"Continual learning with PPO: {envs}, {rounds} rounds\n"
+            f"({len(TASKS[task]) * rounds} phases of {timesteps_per_phase / 1e6:g}M steps, lr {lr:g}{seeds})")
+
+
 def unique_path(path):
     """path, or path with _2, _3 ... before the extension if it exists already (never overwrite an older file)."""
     root, ext = os.path.splitext(path)
@@ -133,13 +149,14 @@ def unique_path(path):
 
 
 def run_phases(lr, models_dir, phases, timesteps_per_phase=TIMESTEPS_PER_PHASE, num_env_runners=NUM_ENV_RUNNERS,
-               monitor=None, env_settings=None):
+               monitor=None, env_settings=None, seed=None):
     """Train all phases with one learning rate; returns (test reward of every phase, verdict of the monitor or
     None if the task went through). The remaining phases are skipped if the monitor stops the task.
     The training curve goes to TensorBoard (models_dir/tb), the x axis is the environment steps cumulated over the
     phases (every phase builds a new algorithm, whose step counter starts at 0): episode_return_mean (sum of the
     agents' scaled rewards) and team_return (minus the total cost, original cost units) of every iteration.
-    env_settings: env_config settings of all the phases, e.g. {"max_stockout_days": 0}."""
+    env_settings: env_config settings of all the phases, e.g. {"max_stockout_days": 0}.
+    seed: random seed of the networks and of the demand (RLlib config.seed), the same in every phase."""
     from torch.utils.tensorboard import SummaryWriter
     os.makedirs(models_dir, exist_ok=True)
     writer = SummaryWriter(os.path.join(models_dir, "tb"))
@@ -149,7 +166,7 @@ def run_phases(lr, models_dir, phases, timesteps_per_phase=TIMESTEPS_PER_PHASE, 
     verdict = None
     for i, (phase_name, env_id) in enumerate(phases, start=1):
         env_config = {"env_class": env_id, "obs_rows": OBS_ROWS, **(env_settings or {})}
-        config = build_ppo_config(env_config, lr=lr, num_env_runners=num_env_runners, num_gpus=NUM_GPUS)
+        config = build_ppo_config(env_config, lr=lr, num_env_runners=num_env_runners, num_gpus=NUM_GPUS, seed=seed)
         algo = config.build_algo()
 
         # change env: continue from the policies trained in the previous phase
@@ -206,6 +223,14 @@ def build_parser(prog=None):
                         help="the order of the task is repeated this many times (default: 3, 5 for bat10-sto1 / "
                              "sto1-bat10)")
     parser.add_argument("--out-dir", default=".", help="directory of the models and figures (default: current)")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="random seed of the networks and of the demand (default: not fixed); several seeds: one "
+                             "run per seed with the same --run-name, then masc-plot-continual --seeds")
+    parser.add_argument("--run-name", default=None,
+                        help="directory of the run under <models dir>/<task>/ (default: date-time); the runs of the "
+                             "seeds of one experiment share it, each one in seed=<seed>/")
+    parser.add_argument("--no-figure", action="store_true",
+                        help="no figure at the end (e.g. one run per seed, the figure of all the seeds comes after)")
     parser.add_argument("--lr", type=float, nargs="+", default=LRS, help="learning rate(s); several -> grid search")
     parser.add_argument("--timesteps-per-phase", type=int, default=TIMESTEPS_PER_PHASE, help="decisions per phase")
     parser.add_argument("--max-stockout-days", type=int, default=None,
@@ -236,8 +261,9 @@ def main(argv=None):
     print(f"task {args.task}, {args.rounds} round(s):", " -> ".join(name for name, _ in phases))
 
     # Set up directories for saving models and logs.
-    stamp = f"{datetime.datetime.now():%Y%m%d-%H%M%S}"
-    models_dir = os.path.abspath(os.path.join(args.out_dir, MODELS_DIRS[args.task], args.task, stamp))
+    stamp = args.run_name or f"{datetime.datetime.now():%Y%m%d-%H%M%S}"
+    models_dir = os.path.abspath(os.path.join(args.out_dir, MODELS_DIRS[args.task], args.task, stamp,
+                                              "" if args.seed is None else f"seed={args.seed}"))
     os.makedirs(models_dir, exist_ok=True)
 
     init_ray()
@@ -249,24 +275,24 @@ def main(argv=None):
             args.monitor_window, args.collapse_tol, args.collapse_patience, args.min_gain, args.no_learning_steps)
         env_settings = {} if args.max_stockout_days is None else {"max_stockout_days": args.max_stockout_days}
         results[lr], verdict = run_phases(lr, lr_dir, phases, args.timesteps_per_phase, args.num_env_runners, monitor,
-                                          env_settings)
+                                          env_settings, seed=args.seed)
         verdicts[lr] = verdict
         with open(os.path.join(lr_dir, "continual_status.json"), "w") as f:
-            json.dump({"task": args.task, "rounds": args.rounds, "lr": lr, "timesteps_per_phase": args.timesteps_per_phase,
+            json.dump({"task": args.task, "rounds": args.rounds, "lr": lr, "seed": args.seed, "run_name": stamp,
+                       "timesteps_per_phase": args.timesteps_per_phase,
                        "env_settings": env_settings, "phases": [n for n, _ in phases],
                        "status": verdict["status"] if verdict else "completed", "verdict": verdict,
                        "test_rewards": results[lr]}, f, indent=2)
         # printed after every learning rate so that partial results are kept in the job output
         print(f"lr={lr} test rewards:", results[lr])
-        # reward curves of the task (only at the end, nothing during the training), e.g.
-        # PPOcon_Sto0-Sto01-Sto1_5rounds_1Msteps-per-phase_lr0.0001_20261013-170501.png
+        if args.no_figure:
+            continue
+        # reward curves of the task (only at the end, nothing during the training)
         envs = [ENV_SHORT_NAMES[e] for e in TASKS[args.task]]
-        per_phase = f"{args.timesteps_per_phase / 1e6:g}M"
         stopped = f"_STOPPED-{verdict['status']}" if verdict else ""
-        fig = unique_path(os.path.join(args.out_dir, f"PPOcon_{'-'.join(envs)}_{args.rounds}rounds_{per_phase}steps-per-phase"
-                                                     f"_lr{lr:g}_{stamp}{stopped}.png"))
-        title = (f"Continual learning with PPO: {' → '.join(envs)}, {args.rounds} round(s) "
-                 f"({per_phase} steps per phase, lr {lr:g})")
+        fig = unique_path(os.path.join(args.out_dir, figure_name(args.task, args.rounds, args.timesteps_per_phase, lr,
+                                                                 stamp, seed=args.seed, suffix=stopped)))
+        title = figure_title(args.task, args.rounds, args.timesteps_per_phase, lr, seed=args.seed)
         if verdict:
             title += f"\nSTOPPED in phase {verdict['phase']} ({verdict['phase_name']}): {verdict['status']}"
         try:
