@@ -47,7 +47,7 @@ MASC_Code/
 The short names are used in figure names, legends and log directories. Old class names such as
 `AssembySto:Stocha_P1` are still accepted.
 
-### Supply chain environment
+### 🌃 Supply chain environment
 
 - **Episode**: T = 100 days. Every day the stages receive their deliveries (an upstream stage can only ship what it
   has in stock; the missing part is a stockout of that stage and is not delivered later), the retailer serves the
@@ -134,7 +134,7 @@ The local runs execute one after the other (logs in `<root>/ui_local/`); stoppin
 
 ---
 
-## 2. Single-environment learning
+## 2. 🤖🤖🤖 for each Single-environment learning
 
 Each run trains the three agents on one environment, with one or several random seeds (one Ray Tune trial per seed
 and learning rate).
@@ -206,7 +206,7 @@ reorder point rp, evaluated on 50 test seeds, no stockout termination):
 
 ---
 
-## 3. Continual learning
+## 3. 🤖*81 for each Continual learning
 
 The agents are trained on a sequence of environments; every phase starts from the policies of the previous phase,
 and the sequence is repeated for several rounds. The observations of all environments have the same 9 rows, so the
@@ -367,7 +367,7 @@ config = build_ppo_config({"env_class": "BatSupplyEnv-v1", "max_stockout_days": 
 
 ---
 
-## 7. 🐕 Tasks
+## 7. ⭐️ Tasks
 
 | Group | Tasks | Algorithms | Setting | Output |
 |---|---|---|---|---|

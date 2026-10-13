@@ -116,12 +116,12 @@ def test_local_queue_runs_one_after_the_other(tmp_path, monkeypatch):
     second = queue.submit("continual", ["0-01-1"], [])
     third = queue.submit("continual", ["1-01-0"], [])
     assert queue.cancel(third["id"])["message"]                       # cancelled while queued: never runs
-    assert wait_until(lambda: second["status"] == "已完成")
+    assert wait_until(lambda: second["status"] == "finished")
     assert first["finished"] <= second["started"]                      # one after the other
     assert first["exit_codes"] == [1, 1] and second["exit_codes"] == [0]
     log = (tmp_path / first["log"]).read_text()
     assert "ran BatSupplyEnv-v1" in log and "ran BatSupplyEnv-v2" in log and "[exit 1]" in log
-    assert third["status"] == "已取消" and third["started"] is None
+    assert third["status"] == "cancelled" and third["started"] is None
 
 
 def test_cancel_running_command(tmp_path, monkeypatch):
@@ -131,7 +131,7 @@ def test_cancel_running_command(tmp_path, monkeypatch):
     assert wait_until(lambda: run["process"] is not None)
     queue.cancel(run["id"])
     assert wait_until(lambda: run["finished"] is not None, timeout=20)
-    assert run["status"] == "已取消" and run["exit_codes"][0] != 0
+    assert run["status"] == "cancelled" and run["exit_codes"][0] != 0
 
 
 def test_mac_only(monkeypatch):

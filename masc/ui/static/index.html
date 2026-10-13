@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MASC 控制台</title>
+<title>MASC Console</title>
 <style>
 :root {
   --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #5d6677; --border: #d9dde5; --accent: #2f6fdb;
@@ -65,9 +65,9 @@ th { color: var(--muted); font-weight: 600; font-size: 12px; }
 tr.click { cursor: pointer; } tr.click:hover, tr.selected { background: var(--hover); }
 .table-wrap { overflow-x: auto; }
 .state { font-weight: 600; }
-.state.运行中, .state.已完成, .state.converged, .state.completed { color: var(--ok); }
-.state.collapsed, .state.diverged, .state.已取消 { color: var(--danger); }
-.state.排队中, .state.stalled, .state.no_learning, .state.未完成 { color: var(--warn); }
+.state.running, .state.finished, .state.converged, .state.completed { color: var(--ok); }
+.state.collapsed, .state.diverged, .state.cancelled { color: var(--danger); }
+.state.queued, .state.stalled, .state.no_learning, .state.unfinished { color: var(--warn); }
 canvas { width: 100%; display: block; }
 .chart { position: relative; }
 .figs { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
@@ -85,15 +85,15 @@ dialog img { max-width: 90vw; max-height: 85vh; }
 </head>
 <body>
 <header>
-  <h1>MASC 控制台</h1>
-  <span class="info" id="info">连接中…</span>
+  <h1>MASC Console</h1>
+  <span class="info" id="info">Connecting…</span>
 </header>
 <nav id="nav">
-  <button data-tab="train" class="active">训练</button>
-  <button data-tab="continual">连续学习</button>
-  <button data-tab="jobs">运行</button>
-  <button data-tab="results">结果</button>
-  <button data-tab="explore">环境探索</button>
+  <button data-tab="train" class="active">Training</button>
+  <button data-tab="continual">Continual learning</button>
+  <button data-tab="jobs">Runs</button>
+  <button data-tab="results">Results</button>
+  <button data-tab="explore">Explore</button>
 </nav>
 <main>
   <div class="msg error" id="global-error"></div>
@@ -103,34 +103,34 @@ dialog img { max-width: 90vw; max-height: 85vh; }
     <div class="grid">
       <div>
         <div class="card">
-          <h2>环境</h2>
+          <h2>Environments</h2>
           <div id="train-items"></div>
           <div class="row" style="margin-top:6px">
-            <button class="btn" data-select="train-items" data-value="all">全选</button>
-            <button class="btn" data-select="train-items" data-value="Bat">只选 Bat</button>
-            <button class="btn" data-select="train-items" data-value="Sto">只选 Sto</button>
+            <button class="btn" data-select="train-items" data-value="all">All</button>
+            <button class="btn" data-select="train-items" data-value="Bat">Bat only</button>
+            <button class="btn" data-select="train-items" data-value="Sto">Sto only</button>
           </div>
-          <h3>算法</h3>
+          <h3>Algorithm</h3>
           <div id="algos"></div>
         </div>
         <div class="card">
-          <h2>预设</h2>
+          <h2>Presets</h2>
           <div class="row">
-            <button class="btn" id="preset-paper">论文设置</button>
-            <button class="btn" id="preset-quick">快速测试</button>
-            <button class="btn" id="preset-default">命令默认值</button>
+            <button class="btn" id="preset-paper">Paper setting</button>
+            <button class="btn" id="preset-quick">Quick test</button>
+            <button class="btn" id="preset-default">Command defaults</button>
           </div>
-          <p class="small">论文设置：团队奖励、不因缺货终止、lr 1e-4、5 个种子、固定 2M 步（在笔记本上需要数小时）。快速测试：2 个种子、5 万步，几分钟。</p>
+          <p class="small">Paper setting: team reward, no stockout termination, lr 1e-4, 5 seeds, fixed 2M steps (several hours on a laptop). Quick test: 2 seeds, 50k steps, a few minutes.</p>
         </div>
         <div class="card" id="train-target"></div>
       </div>
       <div>
-        <div class="card"><h2>参数</h2><div id="train-form"></div></div>
+        <div class="card"><h2>Options</h2><div id="train-form"></div></div>
         <div class="card">
-          <h2>命令预览</h2>
+          <h2>Command preview</h2>
           <pre id="train-preview">…</pre>
           <div class="row" style="margin-top:10px">
-            <button class="btn primary" id="train-submit">提交</button>
+            <button class="btn primary" id="train-submit">Submit</button>
           </div>
           <div class="msg" id="train-msg"></div>
         </div>
@@ -143,19 +143,19 @@ dialog img { max-width: 90vw; max-height: 85vh; }
     <div class="grid">
       <div>
         <div class="card">
-          <h2>连续学习任务</h2>
+          <h2>Continual learning tasks</h2>
           <div id="continual-items"></div>
-          <p class="small">每个任务按顺序在环境之间训练，每个阶段从上一阶段的策略继续，整个顺序重复若干轮。</p>
+          <p class="small">Each task trains on a sequence of environments; every phase starts from the policies of the previous phase, and the sequence is repeated for several rounds.</p>
         </div>
         <div class="card" id="continual-target"></div>
       </div>
       <div>
-        <div class="card"><h2>参数</h2><div id="continual-form"></div></div>
+        <div class="card"><h2>Options</h2><div id="continual-form"></div></div>
         <div class="card">
-          <h2>命令预览</h2>
+          <h2>Command preview</h2>
           <pre id="continual-preview">…</pre>
           <div class="row" style="margin-top:10px">
-            <button class="btn primary" id="continual-submit">提交</button>
+            <button class="btn primary" id="continual-submit">Submit</button>
           </div>
           <div class="msg" id="continual-msg"></div>
         </div>
@@ -167,19 +167,19 @@ dialog img { max-width: 90vw; max-height: 85vh; }
   <section class="tab" id="tab-jobs">
     <div class="card">
       <div class="row" style="justify-content:space-between">
-        <h2 style="margin:0">本机运行队列</h2>
+        <h2 style="margin:0">Local run queue</h2>
         <div class="row">
-          <label class="check"><input type="checkbox" id="jobs-auto" checked> 每 5 秒刷新</label>
-          <button class="btn" id="jobs-refresh">刷新</button>
+          <label class="check"><input type="checkbox" id="jobs-auto" checked> Refresh every 5 s</label>
+          <button class="btn" id="jobs-refresh">Refresh</button>
         </div>
       </div>
-      <p class="small">提交的运行在这台电脑上依次执行（同一时间只运行一个，避免多个训练争用 CPU）。关闭 masc-ui 会停止正在运行的训练。
-        <code>masc-train</code> 没有 trial 收敛时退出码为 1，这不是程序错误。</p>
+      <p class="small">Submitted runs execute on this computer one after the other (one at a time, so that trainings do not compete for the CPUs). Stopping masc-ui stops a running training.
+        <code>masc-train</code> exits with code 1 when no trial converged; this is not a program error.</p>
       <div class="table-wrap"><table id="jobs-local"></table></div>
     </div>
     <div class="card">
-      <h2>日志 <span class="small" id="log-path"></span></h2>
-      <pre id="log-text">点击运行的“日志”查看输出</pre>
+      <h2>Log <span class="small" id="log-path"></span></h2>
+      <pre id="log-text">Click “Log” on a run to see its output</pre>
     </div>
   </section>
 
@@ -187,13 +187,13 @@ dialog img { max-width: 90vw; max-height: 85vh; }
   <section class="tab" id="tab-results">
     <div class="card">
       <div class="row" style="justify-content:space-between">
-        <h2 style="margin:0">运行记录 <span class="small" id="runs-root"></span></h2>
+        <h2 style="margin:0">Runs <span class="small" id="runs-root"></span></h2>
         <div class="row">
           <select id="runs-filter" style="width:auto">
-            <option value="">全部</option><option value="training">单环境训练</option>
-            <option value="continual">连续学习</option>
+            <option value="">All</option><option value="training">Single-environment training</option>
+            <option value="continual">Continual learning</option>
           </select>
-          <button class="btn" id="runs-refresh">刷新</button>
+          <button class="btn" id="runs-refresh">Refresh</button>
         </div>
       </div>
       <div class="table-wrap" style="max-height:340px;overflow-y:auto"><table id="runs-table"></table></div>
@@ -203,24 +203,24 @@ dialog img { max-width: 90vw; max-height: 85vh; }
       <div class="kpi" id="run-kpi"></div>
       <div class="chart"><canvas id="run-chart" height="420"></canvas></div>
       <div class="row" style="margin-top:6px">
-        <label class="check"><input type="checkbox" id="run-show-seeds" checked> 显示单个种子</label>
-        <label class="check"><input type="checkbox" id="run-auto"> 每 30 秒刷新（运行中的训练）</label>
+        <label class="check"><input type="checkbox" id="run-show-seeds" checked> Show the single seeds</label>
+        <label class="check"><input type="checkbox" id="run-auto"> Refresh every 30 s (running trainings)</label>
       </div>
-      <h3>trial 状态</h3>
+      <h3>Trial status</h3>
       <div class="table-wrap"><table id="run-trials"></table></div>
-      <h3>重新制图（masc-plot）</h3>
+      <h3>Re-plot (masc-plot)</h3>
       <div class="fields" id="plot-form">
-        <div class="field"><label>图例</label><input type="text" id="plot-label"></div>
-        <div class="field"><label>学习率（空：最好的）</label><input type="text" id="plot-lr"></div>
-        <div class="field"><label>平滑（0–0.99）</label><input type="text" id="plot-smoothing" value="0"></div>
-        <div class="field"><label>横轴范围</label><input type="text" id="plot-xlim"></div>
-        <div class="field"><label>纵轴范围</label><input type="text" id="plot-ylim"></div>
-        <div class="field"><label>文件名</label><input type="text" id="plot-out"></div>
-        <div class="field"><label class="check"><input type="checkbox" id="plot-seeds" checked> 多种子：均值 ± std</label></div>
+        <div class="field"><label>Legend</label><input type="text" id="plot-label"></div>
+        <div class="field"><label>Learning rate (empty: the best)</label><input type="text" id="plot-lr"></div>
+        <div class="field"><label>Smoothing (0–0.99)</label><input type="text" id="plot-smoothing" value="0"></div>
+        <div class="field"><label>x range</label><input type="text" id="plot-xlim"></div>
+        <div class="field"><label>y range</label><input type="text" id="plot-ylim"></div>
+        <div class="field"><label>File name</label><input type="text" id="plot-out"></div>
+        <div class="field"><label class="check"><input type="checkbox" id="plot-seeds" checked> Several seeds: mean ± std</label></div>
       </div>
-      <div class="row" style="margin-top:10px"><button class="btn primary" id="plot-run">生成图</button></div>
+      <div class="row" style="margin-top:10px"><button class="btn primary" id="plot-run">Plot</button></div>
       <div class="msg" id="plot-msg"></div>
-      <h3>图</h3>
+      <h3>Figures</h3>
       <div class="figs" id="run-figs"></div>
     </div>
   </section>
@@ -229,38 +229,38 @@ dialog img { max-width: 90vw; max-height: 85vh; }
   <section class="tab" id="tab-explore">
     <div class="grid">
       <div class="card">
-        <h2>固定策略</h2>
-        <div class="field"><label>环境</label><select id="ex-env"></select></div>
-        <div class="field" style="margin-top:8px"><label>工厂订货量（0–19）</label><input type="number" id="ex-f" min="0" max="19" value="18"></div>
-        <div class="field" style="margin-top:8px"><label>仓库订货量（0–19）</label><input type="number" id="ex-w" min="0" max="19" value="18"></div>
-        <div class="field" style="margin-top:8px"><label>零售商订货量（0–19）</label><input type="number" id="ex-r" min="0" max="19" value="18"></div>
-        <div class="field" style="margin-top:8px"><label>零售商再订货点（0–9）</label><input type="number" id="ex-rp" min="0" max="9" value="6"></div>
-        <div class="field" style="margin-top:8px"><label>测试种子数</label><input type="number" id="ex-seeds" min="1" max="200" value="50"></div>
-        <label class="check" style="margin-top:8px"><input type="checkbox" id="ex-noterm" checked> 不因缺货终止（跑满 100 天）</label>
+        <h2>Fixed policy</h2>
+        <div class="field"><label>Environment</label><select id="ex-env"></select></div>
+        <div class="field" style="margin-top:8px"><label>Factory order quantity (0–19)</label><input type="number" id="ex-f" min="0" max="19" value="18"></div>
+        <div class="field" style="margin-top:8px"><label>Warehouse order quantity (0–19)</label><input type="number" id="ex-w" min="0" max="19" value="18"></div>
+        <div class="field" style="margin-top:8px"><label>Retailer order quantity (0–19)</label><input type="number" id="ex-r" min="0" max="19" value="18"></div>
+        <div class="field" style="margin-top:8px"><label>Retailer reorder point (0–9)</label><input type="number" id="ex-rp" min="0" max="9" value="6"></div>
+        <div class="field" style="margin-top:8px"><label>Test seeds</label><input type="number" id="ex-seeds" min="1" max="200" value="50"></div>
+        <label class="check" style="margin-top:8px"><input type="checkbox" id="ex-noterm" checked> No stockout termination (full 100 days)</label>
         <div class="row" style="margin-top:10px">
-          <button class="btn primary" id="ex-run">模拟</button>
-          <button class="btn" id="ex-best">搜索最优固定策略</button>
+          <button class="btn primary" id="ex-run">Simulate</button>
+          <button class="btn" id="ex-best">Search the best fixed policy</button>
         </div>
         <div class="msg" id="ex-msg"></div>
       </div>
       <div>
         <div class="card">
-          <h2>结果</h2>
-          <div class="kpi" id="ex-kpi"><div><span>选择策略后点击“模拟”</span></div></div>
-          <h3>第一个 episode：各级库存</h3>
+          <h2>Results</h2>
+          <div class="kpi" id="ex-kpi"><div><span>Choose a policy and click “Simulate”</span></div></div>
+          <h3>First episode: inventory of every stage</h3>
           <div class="chart"><canvas id="ex-inv" height="260"></canvas></div>
-          <h3>第一个 episode：每天的成本</h3>
+          <h3>First episode: cost of every day</h3>
           <div class="chart"><canvas id="ex-cost" height="220"></canvas></div>
         </div>
         <div class="card" id="ex-best-card" style="display:none">
-          <h2>最优固定策略（网格搜索，5 个种子）</h2>
+          <h2>Best fixed policies (grid search, 5 seeds)</h2>
           <div class="table-wrap"><table id="ex-best-table"></table></div>
         </div>
       </div>
     </div>
   </section>
 </main>
-<dialog id="zoom"><img id="zoom-img" alt=""><div class="row" style="justify-content:flex-end"><button class="btn" onclick="this.closest('dialog').close()">关闭</button></div></dialog>
+<dialog id="zoom"><img id="zoom-img" alt=""><div class="row" style="justify-content:flex-end"><button class="btn" onclick="this.closest('dialog').close()">Close</button></div></dialog>
 
 <script>
 "use strict";
@@ -285,7 +285,7 @@ async function api(path, body) {
   const opts = { headers: { "X-Token": TOKEN } };
   if (body !== undefined) { opts.method = "POST"; opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
   const r = await fetch("/api/" + path, opts);
-  const data = await r.json().catch(() => ({ error: "服务器返回了无法解析的结果" }));
+  const data = await r.json().catch(() => ({ error: "The server returned a result that cannot be parsed" }));
   if (!r.ok) throw new Error(data.error || r.statusText);
   return data;
 }
@@ -317,7 +317,7 @@ function drawChart(canvas, opts) {
   const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, cssW, cssH);
   const text = cssVar("--text"), muted = cssVar("--muted"), border = cssVar("--border");
   const all = [...series, ...bands, ...bars];
-  if (!all.length) { ctx.fillStyle = muted; ctx.font = "13px sans-serif"; ctx.fillText("没有数据", 20, 30); return; }
+  if (!all.length) { ctx.fillStyle = muted; ctx.font = "13px sans-serif"; ctx.fillText("No data", 20, 30); return; }
   let xs = [], ys = [];
   for (const s of all) { xs = xs.concat(s.x); ys = ys.concat(s.y, s.lo || [], s.hi || []); }
   let [x0, x1] = opts.xlim || [Math.min(...xs), Math.max(...xs)];
@@ -385,7 +385,7 @@ function buildForm(kind, container) {
   const values = {};
   const groups = {};
   for (const f of schema) (groups[f.group] = groups[f.group] || []).push(f);
-  const order = ["环境与奖励", "训练", "PPO", "Transformer", "收敛判据", "输出", "其他"];
+  const order = ["Environment and reward", "Training", "PPO", "Transformer", "Convergence criteria", "Output", "Other"];
   container.innerHTML = "";
   const inputs = {};
   for (const g of order.filter(g => groups[g]).concat(Object.keys(groups).filter(g => !order.includes(g)))) {
@@ -408,7 +408,7 @@ function buildForm(kind, container) {
         input.value = f.default === null || f.default === undefined ? "" : String(f.default);
         input.addEventListener("input", () => { values[f.option] = input.value; changed(kind); });
         box.append(el("div", { class: "field" }, el("label", { title: f.help }, el("code", { text: f.option }),
-          f.multiple ? " （可填多个，空格分隔）" : ""), input, el("div", { class: "help", text: f.help })));
+          f.multiple ? " (several values, separated by spaces)" : ""), input, el("div", { class: "help", text: f.help })));
       }
       inputs[f.option] = { input, field: f };
     }
@@ -435,10 +435,10 @@ function markChanged(kind) {
 // run card: the commands run on this computer, in a queue
 function buildTarget(kind, container) {
   container.innerHTML = "";
-  container.append(el("h2", { text: "运行" }),
-    el("p", { class: "small", text: `在这台电脑上运行（${META.cpus} 个 CPU），结果写到 ${META.root}。` +
-      "多个环境 / 任务依次运行；提交多个运行时排队，同一时间只运行一个。" }),
-    el("p", { class: "small", text: "每个 trial 占 1 + --num-env-runners 个 CPU；多个种子 / 学习率的 trial 在 CPU 不够时自动排队。" }));
+  container.append(el("h2", { text: "Run" }),
+    el("p", { class: "small", text: `Runs on this computer (${META.cpus} CPUs), results are written to ${META.root}. ` +
+      "Several environments / tasks run one after the other; several submitted runs wait in a queue, one runs at a time." }),
+    el("p", { class: "small", text: "Every trial uses 1 + --num-env-runners CPUs; the trials of several seeds / learning rates wait when there are not enough CPUs." }));
 }
 
 // items (environments / tasks)
@@ -482,9 +482,9 @@ function setupCommandTab(tab) {
   $(tab + "-items").addEventListener("itemschange", () => refreshPreview[tab]());
   $(tab + "-submit").addEventListener("click", async () => {
     const req = request(tab);
-    if (!confirm(`在本机运行 ${req.items.length} 个${tab === "train" ? "环境" : "任务"}（${req.items.join(", ")}）？`)) return;
+    if (!confirm(`Run ${req.items.length} ${tab === "train" ? "environment(s)" : "task(s)"} on this computer (${req.items.join(", ")})?`)) return;
     $(tab + "-submit").disabled = true;
-    try { const r = await api("submit", req); setMsg(tab + "-msg", r.message + "，可在“运行”页查看日志", "ok"); }
+    try { const r = await api("submit", req); setMsg(tab + "-msg", r.message + "; the log is in the Runs tab", "ok"); }
     catch (e) { setMsg(tab + "-msg", e.message, "error"); }
     finally { $(tab + "-submit").disabled = false; }
   });
@@ -511,14 +511,14 @@ async function loadJobs() {
   try {
     const j = await api("runs_local");
     const l = $("jobs-local"); l.innerHTML = "";
-    l.append(el("tr", {}, ...["编号", "命令", "环境 / 任务", "状态", "当前", "退出码", "提交", "开始", "结束", ""].map(t => el("th", { text: t }))));
-    if (!j.runs.length) l.append(el("tr", {}, el("td", { colspan: 10, text: "还没有运行：在“训练”或“连续学习”页提交" })));
+    l.append(el("tr", {}, ...["Id", "Command", "Environments / tasks", "Status", "Current", "Exit codes", "Submitted", "Started", "Finished", ""].map(t => el("th", { text: t }))));
+    if (!j.runs.length) l.append(el("tr", {}, el("td", { colspan: 10, text: "No runs yet: submit one in the Training or Continual learning tab" })));
     for (const r of j.runs) l.append(el("tr", {}, el("td", { text: r.id }), el("td", { text: r.kind }),
       el("td", { text: r.items.join(", ") }), el("td", { class: "state " + r.status, text: r.status }),
       el("td", { text: r.current || "" }), el("td", { text: r.exit_codes.join(", ") }),
       el("td", { text: ago(r.submitted) }), el("td", { text: ago(r.started) }), el("td", { text: ago(r.finished) }),
-      el("td", {}, el("button", { class: "btn", text: "日志", onclick: () => showLog(r.log) }), " ",
-        ["排队中", "运行中"].includes(r.status) ? el("button", { class: "btn danger", text: "取消", onclick: () => cancelRun(r.id) }) : null)));
+      el("td", {}, el("button", { class: "btn", text: "Log", onclick: () => showLog(r.log) }), " ",
+        ["queued", "running"].includes(r.status) ? el("button", { class: "btn danger", text: "Cancel", onclick: () => cancelRun(r.id) }) : null)));
     if (logFile) showLog(logFile, true);
   } catch (e) { setMsg("global-error", e.message, "error"); }
 }
@@ -527,11 +527,11 @@ async function showLog(path, quiet) {
     const r = await api("log?path=" + encodeURIComponent(path) + "&lines=300");
     logFile = path; $("log-path").textContent = r.path;
     const pre = $("log-text"), atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
-    pre.textContent = r.text || "（空）"; if (!quiet || atEnd) pre.scrollTop = pre.scrollHeight;
+    pre.textContent = r.text || "(empty)"; if (!quiet || atEnd) pre.scrollTop = pre.scrollHeight;
   } catch (e) { if (!quiet) $("log-text").textContent = e.message; }
 }
 async function cancelRun(id) {
-  if (!confirm(`取消运行 ${id}？`)) return;
+  if (!confirm(`Cancel run ${id}?`)) return;
   try { const r = await api("cancel", { id }); setMsg("global-error", r.message, "ok"); loadJobs(); }
   catch (e) { setMsg("global-error", e.message, "error"); }
 }
@@ -545,13 +545,13 @@ async function loadRuns() {
 }
 function renderRuns() {
   const t = $("runs-table"), filter = $("runs-filter").value; t.innerHTML = "";
-  t.append(el("tr", {}, ...["类型", "环境 / 任务", "时间", "状态", "trial", "目录"].map(x => el("th", { text: x }))));
+  t.append(el("tr", {}, ...["Type", "Environment / task", "Time", "Status", "Trials", "Directory"].map(x => el("th", { text: x }))));
   const runs = RUNS.filter(r => !filter || r.type === filter);
-  if (!runs.length) t.append(el("tr", {}, el("td", { colspan: 6, text: "结果目录下还没有运行记录" })));
+  if (!runs.length) t.append(el("tr", {}, el("td", { colspan: 6, text: "No runs in the results directory yet" })));
   for (const r of runs) {
     const color = META.colors[r.env];
     const tr = el("tr", { class: "click" + (currentRun && currentRun.path === r.path ? " selected" : "") },
-      el("td", { text: r.type === "training" ? "单环境" : "连续学习" }),
+      el("td", { text: r.type === "training" ? "Single env" : "Continual" }),
       el("td", {}, color ? el("span", { class: "swatch", style: `background:${color};margin-right:6px` }) : null, r.env),
       el("td", { text: r.time }), el("td", { class: "state " + r.state, text: r.state }), el("td", { text: r.n_trials }),
       el("td", { class: "small", text: r.path }));
@@ -560,7 +560,7 @@ function renderRuns() {
 }
 async function openRun(run) {
   currentRun = run; renderRuns(); $("run-detail").style.display = "";
-  $("run-title").textContent = `${run.type === "training" ? "单环境训练" : "连续学习"}：${run.env}（${run.path}）`;
+  $("run-title").textContent = `${run.type === "training" ? "Single-environment training" : "Continual learning"}: ${run.env} (${run.path})`;
   $("plot-label").value = run.type === "training" ? `PPO in ${run.env}` : "";
   $("plot-out").value = `PPO_${run.env}_${(run.path.split("/").slice(-1)[0] || "run")}`;
   $("plot-xlim").value = META.xlim.join(" "); $("plot-ylim").value = META.ylim.join(" ");
@@ -571,17 +571,17 @@ function renderTrials(run) {
   const t = $("run-trials"); t.innerHTML = "";
   if (run.type === "continual") {
     const s = run.status || {};
-    t.append(el("tr", {}, ...["任务", "轮数", "lr", "状态", "各阶段测试回报"].map(x => el("th", { text: x }))));
+    t.append(el("tr", {}, ...["Task", "Rounds", "lr", "Status", "Test return of every phase"].map(x => el("th", { text: x }))));
     t.append(el("tr", {}, el("td", { text: s.task || run.env }), el("td", { text: s.rounds ?? "" }), el("td", { text: s.lr ?? "" }),
       el("td", { class: "state " + run.state, text: run.state }),
-      el("td", { class: "small", text: Object.entries(s.test_rewards || {}).map(([k, v]) => `${k}: ${fmt(v)}`).join("，") })));
+      el("td", { class: "small", text: Object.entries(s.test_rewards || {}).map(([k, v]) => `${k}: ${fmt(v)}`).join(", ") })));
     return;
   }
-  t.append(el("tr", {}, ...["lr", "seed", "状态", "步数", "原因", "would_stop"].map(x => el("th", { text: x }))));
-  if (!run.status) { t.append(el("tr", {}, el("td", { colspan: 6, text: "训练还没有结束（training_status.json 尚未写出）" }))); return; }
+  t.append(el("tr", {}, ...["lr", "seed", "Status", "Steps", "Reason", "would_stop"].map(x => el("th", { text: x }))));
+  if (!run.status) { t.append(el("tr", {}, el("td", { colspan: 6, text: "The training has not finished yet (no training_status.json)" }))); return; }
   for (const s of run.status) t.append(el("tr", {}, el("td", { text: s.lr }), el("td", { text: s.seed ?? "" }),
     el("td", { class: "state " + s.status, text: s.status }), el("td", { text: fmt(s.steps) }), el("td", { class: "small", text: s.reason }),
-    el("td", { class: "small", text: Object.entries(s.would_stop || {}).map(([k, v]) => `${k} @ ${fmt(v.steps)}`).join("，") })));
+    el("td", { class: "small", text: Object.entries(s.would_stop || {}).map(([k, v]) => `${k} @ ${fmt(v.steps)}`).join(", ") })));
 }
 async function loadCurves() {
   if (!currentRun) return;
@@ -604,16 +604,16 @@ function drawRun() {
   const last = c.series.map(s => s.last).filter(v => v !== null);
   if (last.length) {
     const mean = last.reduce((a, b) => a + b, 0) / last.length;
-    kpi.append(el("div", {}, el("b", { text: fmt(mean) }), el("span", { text: "最后一次迭代的 team_return（trial 平均）" })),
-      el("div", {}, el("b", { text: c.series.length }), el("span", { text: "trial 数" })),
-      el("div", {}, el("b", { text: fmt(Math.max(...c.series.map(s => s.x[s.x.length - 1] || 0))) }), el("span", { text: "最大步数" })));
+    kpi.append(el("div", {}, el("b", { text: fmt(mean) }), el("span", { text: "team_return of the last iteration (mean of the trials)" })),
+      el("div", {}, el("b", { text: c.series.length }), el("span", { text: "Trials" })),
+      el("div", {}, el("b", { text: fmt(Math.max(...c.series.map(s => s.x[s.x.length - 1] || 0))) }), el("span", { text: "Max steps" })));
   }
 }
 async function loadFigures() {
   const box = $("run-figs"); box.innerHTML = "";
   try {
     const r = await api("figures?path=" + encodeURIComponent(currentRun.path));
-    if (!r.figures.length) box.append(el("div", { class: "small", text: "这个运行目录里没有图" }));
+    if (!r.figures.length) box.append(el("div", { class: "small", text: "No figures in this run directory" }));
     for (const f of r.figures) box.append(figure(f));
   } catch (e) { box.append(el("div", { class: "msg error", text: e.message })); }
 }
@@ -628,7 +628,7 @@ async function replot() {
     smoothing: $("plot-smoothing").value, xlim: nums($("plot-xlim").value), ylim: nums($("plot-ylim").value),
     out: $("plot-out").value, seeds: $("plot-seeds").checked };
   try {
-    const r = await api("plot", body); setMsg("plot-msg", `已生成 ${r.path}`, "ok");
+    const r = await api("plot", body); setMsg("plot-msg", `Written ${r.path}`, "ok");
     $("run-figs").prepend(figure(r.path));
   } catch (e) { setMsg("plot-msg", e.message, "error"); }
 }
@@ -637,29 +637,29 @@ async function replot() {
 async function simulate() {
   const body = { env: $("ex-env").value, orders: { factory: +$("ex-f").value, warehouse: +$("ex-w").value, retailer: +$("ex-r").value },
     reorder_point: +$("ex-rp").value, seeds: +$("ex-seeds").value, max_stockout_days: $("ex-noterm").checked ? 0 : 12 };
-  setMsg("ex-msg", "模拟中…");
+  setMsg("ex-msg", "Simulating…");
   try {
     const r = await api("simulate", body); setMsg("ex-msg", "");
     const kpi = $("ex-kpi"); kpi.innerHTML = "";
-    kpi.append(el("div", {}, el("b", { text: fmt(r.mean) }), el("span", { text: `episode 总成本（取负），${r.n} 个种子平均` })),
-      el("div", {}, el("b", { text: fmt(r.std) }), el("span", { text: "标准差" })),
-      ...Object.entries(r.per_agent).map(([a, v]) => el("div", {}, el("b", { text: fmt(v) }), el("span", { text: a + " 自身成本（不含首日）" }))),
-      el("div", {}, el("b", { text: r.trace.days }), el("span", { text: r.trace.terminated ? "天（因缺货终止）" : "天" })));
+    kpi.append(el("div", {}, el("b", { text: fmt(r.mean) }), el("span", { text: `negative total episode cost, mean of ${r.n} seeds` })),
+      el("div", {}, el("b", { text: fmt(r.std) }), el("span", { text: "std" })),
+      ...Object.entries(r.per_agent).map(([a, v]) => el("div", {}, el("b", { text: fmt(v) }), el("span", { text: a + " own cost (without day 1)" }))),
+      el("div", {}, el("b", { text: r.trace.days }), el("span", { text: r.trace.terminated ? "days (stockout termination)" : "days" })));
     const t = r.trace;
-    drawChart($("ex-inv"), { xlabel: "Day", ylabel: "库存", series: Object.entries(t.inventory).map(([a, y]) =>
-      ({ name: a, color: AGENT_COLORS[a], x: t.day, y })).concat([{ name: "需求", color: cssVar("--muted"), x: t.day, y: t.demand, width: .8 }]) });
-    drawChart($("ex-cost"), { xlabel: "Day", ylabel: "成本", bars: [{ name: "补货日的团队成本", color: "#e07b39", x: t.day, y: t.cost }] });
+    drawChart($("ex-inv"), { xlabel: "Day", ylabel: "Inventory", series: Object.entries(t.inventory).map(([a, y]) =>
+      ({ name: a, color: AGENT_COLORS[a], x: t.day, y })).concat([{ name: "Demand", color: cssVar("--muted"), x: t.day, y: t.demand, width: .8 }]) });
+    drawChart($("ex-cost"), { xlabel: "Day", ylabel: "Cost", bars: [{ name: "Team cost of the ordering days", color: "#e07b39", x: t.day, y: t.cost }] });
   } catch (e) { setMsg("ex-msg", e.message, "error"); }
 }
 async function bestFixed() {
-  setMsg("ex-msg", "网格搜索中（约 360 个策略，可能需要一分钟）…"); $("ex-best").disabled = true;
+  setMsg("ex-msg", "Grid search (about 360 policies, may take a minute)…"); $("ex-best").disabled = true;
   try {
     const r = await api("best_fixed", { env: $("ex-env").value, seeds: 5, max_stockout_days: $("ex-noterm").checked ? 0 : 12 });
     setMsg("ex-msg", ""); $("ex-best-card").style.display = "";
     const t = $("ex-best-table"); t.innerHTML = "";
-    t.append(el("tr", {}, ...["排名", "零售商订货量", "再订货点", "上游订货量", "平均总成本", ""].map(x => el("th", { text: x }))));
+    t.append(el("tr", {}, ...["Rank", "Retailer order", "Reorder point", "Upstream order", "Mean total cost", ""].map(x => el("th", { text: x }))));
     r.best.forEach((b, i) => t.append(el("tr", {}, el("td", { text: i + 1 }), el("td", { text: b.q_retailer }), el("td", { text: b.reorder_point }),
-      el("td", { text: b.q_upstream }), el("td", { text: fmt(b.mean) }), el("td", {}, el("button", { class: "btn", text: "使用", onclick: () => {
+      el("td", { text: b.q_upstream }), el("td", { text: fmt(b.mean) }), el("td", {}, el("button", { class: "btn", text: "Use", onclick: () => {
         $("ex-r").value = b.q_retailer; $("ex-rp").value = b.reorder_point; $("ex-f").value = b.q_upstream; $("ex-w").value = b.q_upstream; simulate(); } })))));
   } catch (e) { setMsg("ex-msg", e.message, "error"); }
   finally { $("ex-best").disabled = false; }
@@ -675,14 +675,14 @@ function showTab(name) {
   if (name === "results") { loadRuns(); if (currentCurves) drawRun(); }
 }
 async function init() {
-  if (!TOKEN) { setMsg("global-error", "网址里没有令牌：请使用 masc-ui 启动时打开 / 打印的完整网址（含 ?token=...）", "error"); return; }
+  if (!TOKEN) { setMsg("global-error", "No token in the address: use the full address opened / printed by masc-ui at start-up (with ?token=...)", "error"); return; }
   try { META = await api("meta"); } catch (e) { setMsg("global-error", e.message, "error"); return; }
-  $("info").textContent = `${META.hostname} · 结果目录 ${META.root} · ${META.cpus} 个 CPU · masc ${META.version}`;
+  $("info").textContent = `${META.hostname} · results root ${META.root} · ${META.cpus} CPUs · masc ${META.version}`;
   $("runs-root").textContent = META.root;
   document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
 
   buildItems($("train-items"), META.envs.map(e => ({ id: e.id, label: e.short, note: e.id, color: e.color, checked: true })));
-  buildItems($("continual-items"), META.tasks.map(t => ({ id: t.id, label: t.id, note: `${t.envs.join(" → ")}，默认 ${t.rounds} 轮`, checked: false })));
+  buildItems($("continual-items"), META.tasks.map(t => ({ id: t.id, label: t.id, note: `${t.envs.join(" → ")}, ${t.rounds} rounds by default`, checked: false })));
   document.querySelectorAll("[data-select]").forEach(b => b.addEventListener("click", () => {
     const box = $(b.dataset.select), v = b.dataset.value;
     box.querySelectorAll("input").forEach(i => { const env = META.envs.find(e => e.id === i.value); i.checked = v === "all" || env.short.startsWith(v); });
@@ -714,7 +714,7 @@ async function init() {
   runTimer = setInterval(() => { if ($("run-auto").checked && currentRun && $("tab-results").classList.contains("active")) loadCurves(); }, 30000);
   window.addEventListener("resize", debounce(() => { if (currentCurves) drawRun(); }, 200));
 
-  for (const e of META.envs) $("ex-env").append(el("option", { value: e.id, text: `${e.short}（${e.id}）` }));
+  for (const e of META.envs) $("ex-env").append(el("option", { value: e.id, text: `${e.short} (${e.id})` }));
   $("ex-run").addEventListener("click", simulate); $("ex-best").addEventListener("click", bestFixed);
 
   let tab = "train"; try { tab = sessionStorage.getItem("masc-tab") || "train"; } catch (e) { }

@@ -51,20 +51,20 @@ from ..marl_env import ENV_IDS, ENV_SHORT_NAMES, SupplyChainMARLEnv
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 AGENTS = ("factory", "warehouse", "retailer")
 
-# groups of the form fields (argparse dest -> group), the others go to "其他"
+# groups of the form fields (argparse dest -> group), the others go to "Other"
 GROUPS = {
-    "reward_mode": "环境与奖励", "reward_scale": "环境与奖励", "team_weight": "环境与奖励", "final_costs": "环境与奖励",
-    "termination_penalty": "环境与奖励", "max_stockout_days": "环境与奖励",
-    "lr": "训练", "seeds": "训练", "total_timesteps": "训练", "early_stop": "训练", "time_budget_hours": "训练",
-    "num_env_runners": "训练", "num_gpus": "训练", "checkpoint_freq": "训练", "rounds": "训练",
-    "timesteps_per_phase": "训练",
+    "reward_mode": "Environment and reward", "reward_scale": "Environment and reward", "team_weight": "Environment and reward", "final_costs": "Environment and reward",
+    "termination_penalty": "Environment and reward", "max_stockout_days": "Environment and reward",
+    "lr": "Training", "seeds": "Training", "total_timesteps": "Training", "early_stop": "Training", "time_budget_hours": "Training",
+    "num_env_runners": "Training", "num_gpus": "Training", "checkpoint_freq": "Training", "rounds": "Training",
+    "timesteps_per_phase": "Training",
     "vf_clip": "PPO", "factory_clip": "PPO",
     **{f"tf_{key}": "Transformer" for key in ("memory", "num_layers", "d_model", "num_heads", "head_dim", "ff_dim",
                                               "gate_bias", "max_seq_len", "head_hiddens")},
-    "conv_window": "收敛判据", "conv_tol": "收敛判据", "conv_patience": "收敛判据", "min_timesteps": "收敛判据",
-    "min_gain": "收敛判据", "near_best_tol": "收敛判据", "collapse_tol": "收敛判据", "collapse_patience": "收敛判据",
-    "stall_patience": "收敛判据", "no_monitor": "收敛判据", "monitor_window": "收敛判据", "no_learning_steps": "收敛判据",
-    "out_dir": "输出", "csv_dir": "输出", "csv_seed": "输出", "name": "输出", "dir": "输出", "tag": "输出",
+    "conv_window": "Convergence criteria", "conv_tol": "Convergence criteria", "conv_patience": "Convergence criteria", "min_timesteps": "Convergence criteria",
+    "min_gain": "Convergence criteria", "near_best_tol": "Convergence criteria", "collapse_tol": "Convergence criteria", "collapse_patience": "Convergence criteria",
+    "stall_patience": "Convergence criteria", "no_monitor": "Convergence criteria", "monitor_window": "Convergence criteria", "no_learning_steps": "Convergence criteria",
+    "out_dir": "Output", "csv_dir": "Output", "csv_seed": "Output", "name": "Output", "dir": "Output", "tag": "Output",
 }
 # commands of the interface: module run with "python -m", its parser, and the option of the item (environment / task)
 COMMANDS = {
@@ -76,7 +76,7 @@ COMMANDS = {
                   "item_option": "--task", "items": list(continual_mod.TASKS)},
 }
 # algorithms of the training page (commands above), in the order of the page
-ALGORITHMS = {"train": "PPO（MLP）", "train_transformer": "Transformer PPO（GTrXL）"}
+ALGORITHMS = {"train": "PPO (MLP)", "train_transformer": "Transformer PPO (GTrXL)"}
 # options handled by the interface itself (environment / task, output directory = results root)
 HIDDEN = {"env", "task", "out_dir", "help"}
 
@@ -105,7 +105,7 @@ def parser_schema(parser):
         option = max(a.option_strings, key=len)
         flag = isinstance(a, (argparse._StoreTrueAction, argparse._StoreFalseAction, argparse._StoreConstAction))
         field = {"option": option, "dest": a.dest, "kind": "flag" if flag else "value", "help": a.help or "",
-                 "group": GROUPS.get(a.dest, "其他")}
+                 "group": GROUPS.get(a.dest, "Other")}
         if not flag:
             default = a.default
             if isinstance(default, (list, tuple)):
@@ -155,7 +155,7 @@ def build_argv(kind, values):
     try:
         namespace = _raising_parser(kind).parse_args([COMMANDS[kind]["item_option"], item] + argv)
     except UIError as e:
-        raise UIError(f"参数错误: {e}")
+        raise UIError(f"Invalid arguments: {e}")
     return argv, namespace
 
 
@@ -216,7 +216,7 @@ def _training_run(root, run_dir, env):
         states = sorted({s.get("status") for s in status})
         state = ", ".join(states)
     else:
-        state = "运行中" if time.time() - mtime < 600 else "未完成"
+        state = "running" if time.time() - mtime < 600 else "unfinished"
     return {"type": "training", "env": env, "path": os.path.relpath(run_dir, root), "time": _stamp(run_dir),
             "mtime": mtime, "state": state, "n_trials": len(trials), "status": status}
 
@@ -227,7 +227,7 @@ def _continual_run(root, lr_dir):
     tb = os.path.join(lr_dir, "tb")
     mtime = max([os.path.getmtime(f) for f in glob.glob(os.path.join(glob.escape(tb), "*"))] +
                 [os.path.getmtime(lr_dir)])
-    state = status.get("status") if status else ("运行中" if time.time() - mtime < 600 else "未完成")
+    state = status.get("status") if status else ("running" if time.time() - mtime < 600 else "unfinished")
     return {"type": "continual", "env": task, "path": os.path.relpath(lr_dir, root),
             "time": os.path.basename(os.path.dirname(lr_dir)), "mtime": mtime, "state": state, "n_trials": 1,
             "status": status}
@@ -287,9 +287,9 @@ def run_curves(root, rel_path):
             continue
         xs, mean = _downsample(grid.tolist(), values.mean(axis=0).tolist())
         _, std = _downsample(grid.tolist(), values.std(axis=0).tolist())
-        bands.append({"name": f"lr={lr} 均值 ± std（{len(curves)} 个种子）", "lr": lr, "x": xs, "y": mean,
+        bands.append({"name": f"lr={lr} mean ± std ({len(curves)} seeds)", "lr": lr, "x": xs, "y": mean,
                       "lo": [m - s for m, s in zip(mean, std)], "hi": [m + s for m, s in zip(mean, std)]})
-    return {"type": "training", "series": series, "bands": bands, "ylabel": "team_return（episode 总成本，取负）"}
+    return {"type": "training", "series": series, "bands": bands, "ylabel": "team_return (negative total episode cost)"}
 
 
 def run_figures(root, rel_path):
@@ -303,7 +303,7 @@ def safe_path(root, rel_path):
     root = os.path.realpath(root)
     path = os.path.realpath(os.path.join(root, rel_path or ""))
     if path != root and not path.startswith(root + os.sep):
-        raise UIError("路径不在结果目录内")
+        raise UIError("The path is not inside the results directory")
     return path
 
 
@@ -380,7 +380,7 @@ class LocalQueue:
         with self.cond:
             self.count += 1
             run_id = f"{datetime.datetime.now():%Y%m%d-%H%M%S}-{self.count}"
-        run = {"id": run_id, "kind": kind, "items": list(items), "status": "排队中", "exit_codes": [],
+        run = {"id": run_id, "kind": kind, "items": list(items), "status": "queued", "exit_codes": [],
                "commands": [python_command(kind, i, argv) for i in items], "current": None,
                "log": os.path.relpath(os.path.join(log_dir, f"{run_id}_{kind}.log"), self.root),
                "submitted": time.time(), "started": None, "finished": None, "process": None}
@@ -392,14 +392,14 @@ class LocalQueue:
     def _worker(self):
         while True:
             with self.cond:
-                run = next((r for r in self.runs if r["status"] == "排队中"), None)
+                run = next((r for r in self.runs if r["status"] == "queued"), None)
                 if run is None:
                     self.cond.wait()
                     continue
-                run["status"], run["started"] = "运行中", time.time()
+                run["status"], run["started"] = "running", time.time()
             with open(os.path.join(self.root, run["log"]), "a") as f:
                 for k, cmd in enumerate(run["commands"]):
-                    if run["status"] == "已取消":
+                    if run["status"] == "cancelled":
                         break
                     run["current"] = run["items"][k]
                     f.write(f"\n$ {' '.join(shlex.quote(t) for t in cmd)}\n")
@@ -414,17 +414,17 @@ class LocalQueue:
                     f.flush()
             with self.cond:
                 run["finished"], run["current"], run["process"] = time.time(), None, None
-                if run["status"] != "已取消":
-                    run["status"] = "已完成"
+                if run["status"] != "cancelled":
+                    run["status"] = "finished"
 
     def cancel(self, run_id):
         with self.cond:
             run = next((r for r in self.runs if r["id"] == run_id), None)
             if run is None:
-                raise UIError("没有这个运行")
-            if run["status"] not in ("排队中", "运行中"):
-                raise UIError("这个运行已经结束")
-            run["status"] = "已取消"
+                raise UIError("No such run")
+            if run["status"] not in ("queued", "running"):
+                raise UIError("This run has already finished")
+            run["status"] = "cancelled"
             process = run["process"]
         if process is not None and process.poll() is None:
             try:
@@ -432,7 +432,7 @@ class LocalQueue:
                 threading.Timer(15, _kill_group, args=(process,)).start()
             except ProcessLookupError:
                 pass
-        return {"message": f"已取消 {run_id}"}
+        return {"message": f"Cancelled {run_id}"}
 
     def list(self):
         with self.cond:
@@ -474,7 +474,7 @@ class App:
         kind, items = body.get("kind"), body.get("items") or []
         argv, _ = build_argv(kind, body.get("values"))
         if not items:
-            raise UIError("请至少选择一个环境 / 任务")
+            raise UIError("Select at least one environment / task")
         bad = [i for i in items if i not in COMMANDS[kind]["items"]]
         if bad:
             raise UIError(f"unknown items {bad}")
@@ -484,16 +484,16 @@ class App:
     def submit(self, body):
         p = self.preview(body)
         run = self.queue.submit(body["kind"], body["items"], p["argv"])
-        waiting = sum(r["status"] in ("排队中", "运行中") for r in self.queue.list()) - 1
-        where = "开始运行" if waiting == 0 else f"已加入队列（前面还有 {waiting} 个）"
-        return {"message": f"运行 {run['id']} {where}：{len(body['items'])} 个命令依次执行", "id": run["id"],
+        waiting = sum(r["status"] in ("queued", "running") for r in self.queue.list()) - 1
+        where = "started" if waiting == 0 else f"queued ({waiting} ahead)"
+        return {"message": f"Run {run['id']} {where}: {len(body['items'])} commands, one after the other", "id": run["id"],
                 "log": run["log"]}
 
     def read_log(self, path, lines=200):
         """Last lines of a log file inside the results root."""
         real = safe_path(self.root, path)
         if not os.path.isfile(real):
-            raise UIError("日志文件不存在")
+            raise UIError("The log file does not exist")
         with open(real, "rb") as f:
             f.seek(0, 2)
             size = f.tell()
@@ -556,7 +556,7 @@ def make_handler(app):
             if not url.path.startswith("/api/"):
                 return self._send(404, {"error": "not found"})
             if not self._authorised(query):
-                return self._send(403, {"error": "令牌无效：请使用 masc-ui 启动时打开 / 打印的完整网址（含 ?token=...）"})
+                return self._send(403, {"error": "Invalid token: use the full address opened / printed by masc-ui at start-up (with ?token=...)"})
             q = {k: v[0] for k, v in query.items()}
             try:
                 body = {}
@@ -565,12 +565,12 @@ def make_handler(app):
                     try:
                         body = json.loads(self.rfile.read(length) or b"{}")
                     except ValueError:
-                        raise UIError("请求不是合法的 JSON")
+                        raise UIError("The request is not valid JSON")
                 route = url.path[len("/api/"):]
                 if route == "file":
                     path = safe_path(app.root, q.get("path"))
                     if not os.path.isfile(path):
-                        raise UIError("文件不存在")
+                        raise UIError("The file does not exist")
                     ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
                     with open(path, "rb") as f:
                         return self._send(200, f.read(), ctype)
