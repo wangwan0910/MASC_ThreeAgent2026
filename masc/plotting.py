@@ -56,6 +56,8 @@ DEFAULT_COLOR = "gray"
 # common axis limits of all single-environment training figures, see the module docstring
 XLIM = (0, 2e6)
 YLIM = (-2e6, 0)
+# resolution of the continual learning figures (wide, with a detail inset: the default 100 dpi is too coarse)
+CONTINUAL_DPI = 300
 
 
 def env_color(env):
@@ -285,7 +287,7 @@ def _finish_continual(fig, ax, out, title, metric):
     ax.set_ylabel(METRIC_LABELS[metric])
     sci_axes(ax)
     ax.legend(loc="lower right")
-    fig.savefig(out, bbox_inches="tight")
+    fig.savefig(out, bbox_inches="tight", dpi=CONTINUAL_DPI)
     plt.close(fig)
     print("figure", out)
     return out
@@ -343,22 +345,59 @@ def continual_seed_phases(run_dir, lr=None):
     return result, metric, sorted(per_seed)
 
 
-def plot_continual_seeds(run_dir, out, title, phases_per_round=None, lr=None):
-    """Continual learning, several seeds: mean of the seeds (line) and mean +- std (light band) of every phase,
-    coloured by environment, in the style of assets/dcontinustoPPO2_2.png."""
-    phases, metric, seeds = continual_seed_phases(run_dir, lr)
-    fig, ax = plt.subplots(figsize=(12, 4))
+def _draw_seed_phases(ax, phases, phases_per_round, legend=True, round_labels=True):
     labelled = set()
     for number, env, steps, mean, std, n in phases:
         color = ENV_COLORS.get(env)
         ax.fill_between(steps, mean - std, mean + std, color=color, alpha=0.25, linewidth=0)
-        ax.plot(steps, mean, color=color, linewidth=0.8, label=None if env in labelled else env)
+        ax.plot(steps, mean, color=color, linewidth=0.8, label=None if env in labelled or not legend else env)
         labelled.add(env)
-        if len(steps):
+        if len(steps) and round_labels:
             _round_mark(ax, number, steps[0], phases_per_round)
+        elif len(steps) and phases_per_round and number > 1 and (number - 1) % phases_per_round == 0:
+            ax.axvline(steps[0], color="gray", linewidth=0.6, linestyle=":")
+
+
+def _zoom_ylim(phases, skip=0.5, margin=0.1):
+    """y range of the detail inset: mean +- std of all the phases, without the first half (skip) of the first phase,
+    where the policies trained from scratch still have returns far below the rest of the task."""
+    lows, highs = [], []
+    for i, (number, env, steps, mean, std, n) in enumerate(phases):
+        start = int(len(mean) * skip) if i == 0 else 0
+        if len(mean) > start:
+            lows.append(np.min(mean[start:] - std[start:]))
+            highs.append(np.max(mean[start:] + std[start:]))
+    lo, hi = min(lows), max(highs)
+    return lo - margin * (hi - lo), hi + margin * (hi - lo)
+
+
+def plot_continual_seeds(run_dir, out, title, phases_per_round=None, lr=None, inset=True):
+    """Continual learning, several seeds: mean of the seeds (line) and mean +- std (light band) of every phase,
+    coloured by environment, in the style of assets/dcontinustoPPO2_2.png.
+    inset: detail of the curves (zoomed y axis, _zoom_ylim) in the empty lower part of the figure, where the +- std
+    bands can be seen; drawn only if the zoomed range is less than a quarter of the full y range."""
+    phases, metric, seeds = continual_seed_phases(run_dir, lr)
+    fig, ax = plt.subplots(figsize=(12, 4))
+    _draw_seed_phases(ax, phases, phases_per_round)
     incomplete = [(number, n) for number, _, _, _, _, n in phases if n < len(seeds)]
     if incomplete:
         print(f"WARNING: phases with fewer than {len(seeds)} seeds (phase, seeds): {incomplete}")
+    if inset and phases:
+        lo, hi = _zoom_ylim(phases)
+        full_lo, full_hi = ax.get_ylim()
+        if hi - lo < 0.25 * (full_hi - full_lo):
+            # below the curves: the main axes are empty there except the start of the first phase (left edge) and
+            # the legend (lower right)
+            ins = ax.inset_axes([0.1, 0.06, 0.76, 0.62])
+            _draw_seed_phases(ins, phases, phases_per_round, legend=False, round_labels=False)
+            ins.set_xlim(ax.get_xlim())
+            ins.set_ylim(lo, hi)
+            ins.tick_params(labelsize=7)
+            ins.set_title("detail (mean ± std)", fontsize=8)
+            sci_axes(ins)
+            ins.yaxis.get_offset_text().set_fontsize(7)
+            ins.xaxis.get_offset_text().set_visible(False)
+            ax.indicate_inset_zoom(ins, edgecolor="gray")
     return _finish_continual(fig, ax, out, title, metric)
 
 
@@ -373,18 +412,26 @@ def main_continual(argv=None):
     parser.add_argument("--out", default=None, help="figure file (default: PPOcon.png, --seeds: name from the "
                                                     "settings of the experiment, in the current directory)")
     parser.add_argument("--title", default=None)
+    parser.add_argument("--no-inset", action="store_true",
+                        help="--seeds: no detail inset (zoomed y axis with the +- std bands) in the empty part")
     a = parser.parse_args(argv)
     if not a.seeds:
         plot_continual(a.path, a.out or "PPOcon.png", a.title or "Continuous agent reward curves for PPO")
         return 0
     from .continual import TASKS, figure_name, figure_title
     tbs = seed_tb_dirs(a.path, a.lr)
-    with open(os.path.join(os.path.dirname(next(iter(tbs.values()))), "continual_status.json")) as f:
+    # settings of the experiment from the first seed that finished (a crashed seed has no continual_status.json)
+    statuses = [os.path.join(os.path.dirname(tb), "continual_status.json") for tb in tbs.values()]
+    finished = [s for s in statuses if os.path.exists(s)]
+    if not finished:
+        raise SystemExit(f"no continual_status.json in the seeds of {a.path}: no seed has finished")
+    with open(finished[0]) as f:
         st = json.load(f)
     name = (st["task"], st["rounds"], st["timesteps_per_phase"], st["lr"])
-    out = a.out or figure_name(*name, st.get("run_name") or os.path.basename(a.path), n_seeds=len(tbs))
-    plot_continual_seeds(a.path, out, a.title or figure_title(*name, n_seeds=len(tbs)),
-                         phases_per_round=len(TASKS[st["task"]]), lr=a.lr)
+    algo = st.get("algo", "PPO")
+    out = a.out or figure_name(*name, st.get("run_name") or os.path.basename(a.path), n_seeds=len(tbs), algo=algo)
+    plot_continual_seeds(a.path, out, a.title or figure_title(*name, n_seeds=len(tbs), algo=algo),
+                         phases_per_round=len(TASKS[st["task"]]), lr=a.lr, inset=not a.no_inset)
     return 0
 
 
@@ -409,6 +456,140 @@ def main(argv=None):
     else:
         plot_run(a.logdir, a.label, a.out, a.lr, 0.6 if a.smoothing is None else a.smoothing, a.xlim, a.ylim,
                  env=a.env)
+    return 0
+
+
+# policy figures of a trajectory CSV (masc-trajectory), in the style of assets/OPst01.png (orders) and
+# assets/RinvBat10.png (inventory)
+POLICY_FIGSIZE = (10, 12)
+POLICY_FONTSIZE = 20
+# colour of the line that tells the environments apart (reorder point in the order figure, retailer stockout in the
+# inventory figure); other environments keep REORDER_POINT_COLOR / STOCKOUT_COLOR
+POLICY_ENV_COLORS = {"Sto0": "m", "Sto01": "teal", "Sto1": "darkgreen",
+                     "Bat10": "palevioletred", "Bat7": "steelblue", "Bat3": "purple"}
+REORDER_POINT_COLOR = "cyan"
+STOCKOUT_COLOR = "tomato"
+
+
+def read_trajectory(csv_path):
+    """{seed: {column: np.array over the days}} of a trajectory CSV (masc-trajectory)."""
+    import csv
+    rows = {}
+    with open(csv_path) as f:
+        for row in csv.DictReader(f):
+            rows.setdefault(int(row["seed"]), []).append(row)
+    return {seed: {k: np.array([float(r[k]) for r in rs]) for k in rs[0]} for seed, rs in sorted(rows.items())}
+
+
+def best_seed(trajectories):
+    """Seed whose episode has the highest total Cost (the least total cost of the supply chain)."""
+    return max(trajectories, key=lambda seed: trajectories[seed]["Cost"].sum())
+
+
+def _policy_legend(ax, gap_px=12):
+    """Legend inside the axes, lower right corner. The values of the policy figures are >= 0, so the y axis is
+    extended below 0 until the legend fits under y = 0 (gap_px pixels of clearance): it covers no line."""
+    leg = ax.legend(loc="lower right", ncol=2, fontsize=POLICY_FONTSIZE - 4, framealpha=0.9)
+    fig = ax.figure
+    fig.canvas.draw()
+    ab, lb = ax.get_window_extent(), leg.get_window_extent()
+    # fraction of the axes height the legend (and the clearance) takes from the bottom
+    r = (lb.y1 - ab.y0 + gap_px) / ab.height
+    top = ax.get_ylim()[1]
+    ax.set_ylim(-r * top / (1 - r), top)
+    return leg
+
+
+def _policy_axes(title):
+    plt.rcParams.update({"font.size": POLICY_FONTSIZE})
+    fig, ax = plt.subplots(figsize=POLICY_FIGSIZE)
+    ax.set_title(title)
+    ax.set_xlabel("Step")
+    return fig, ax
+
+
+def plot_policy_orders(traj, title, out, days=30):
+    """Orders of the three agents and reorder point of the retailer over the first days of the episode
+    (assets/OPst01.png). The thin lines are drawn above the thick ones: the orders of the agents are often equal.
+    The reorder point is only set on reorder days and kept in between: step line, markers on the reorder days."""
+    fig, ax = _policy_axes(title)
+    t = traj["day"][:days]
+    ax.plot(t, traj["retailer_orderToSupplier"][:days], color="blue", linewidth=1, label="retailer order", zorder=4)
+    ax.plot(t, traj["warehouse_orderToSupplier"][:days], color="darkgoldenrod", linestyle="--", linewidth=2,
+            label="warehouse order", zorder=3)
+    ax.plot(t, traj["factory_orderToSupplier"][:days], color="silver", linewidth=3, label="factory order", zorder=2)
+    reorder_days = traj["retailer_actionTriggerHistory"][:days] > 0
+    ax.step(t, traj["retailer_reorderpoint"][:days], where="post",
+            color=POLICY_ENV_COLORS.get(title, REORDER_POINT_COLOR), linewidth=2, marker="o", markersize=6,
+            markevery=np.flatnonzero(reorder_days).tolist(), label="reorder point")
+    ax.set_ylim(-5, 32)
+    _policy_legend(ax)
+    fig.savefig(out, bbox_inches="tight")
+    plt.close(fig)
+    print("figure", out)
+    return out
+
+
+def stockout_before_execute(traj, agent="retailer"):
+    """Cumulative stockouts of the agent before the actions are executed: stockouts since the last reorder day,
+    the current day included (the CSV state is the state after execute, where stockout_cum is reset to 0 on the
+    reorder days). On a reorder day this is the stockout charged in the cost."""
+    daily, trigger = traj[f"{agent}_stockout_daily"], traj["retailer_actionTriggerHistory"]
+    cum, total = np.zeros_like(daily), 0.0
+    for i, (d, reorder) in enumerate(zip(daily, trigger)):
+        total += d
+        cum[i] = total
+        if reorder:
+            total = 0.0
+    return cum
+
+
+def plot_policy_inventory(traj, title, out, days=100):
+    """Inventory of the three agents and cumulative stockout of the retailer before execute (stockouts since the
+    last reorder day, see stockout_before_execute), step lines from day 0 (initial inventory taken as the
+    inventory of day 1 + its demand is not known, so the lines start at 0 as in assets/RinvBat10.png)."""
+    fig, ax = _policy_axes(title)
+    t = np.concatenate([[0], traj["day"][:days]])
+
+    def steps(column):
+        return np.concatenate([[0], traj[column][:days]])
+
+    ax.step(t, steps("retailer_inventory"), where="post", color="blue", linewidth=1.5, label="retailer inventory")
+    ax.step(t, steps("warehouse_inventory"), where="post", color="orange", linestyle="--", linewidth=2.5,
+            label="warehouse inventory")
+    ax.step(t, steps("factory_inventory"), where="post", color="gray", linewidth=1.5, label="factory inventory")
+    stockout = np.concatenate([[0], stockout_before_execute(traj)[:days]])
+    ax.step(t, stockout, where="post", color=POLICY_ENV_COLORS.get(title, STOCKOUT_COLOR),
+            linewidth=2.5, marker="^", markersize=6, label="retailer cumulative stockout")
+    ax.set_ylim(-8, 32)
+    _policy_legend(ax)
+    fig.savefig(out, bbox_inches="tight")
+    plt.close(fig)
+    print("figure", out)
+    return out
+
+
+def main_policy(argv=None):
+    """masc-plot-policy: order and inventory figures of the trained policies, from a trajectory CSV."""
+    parser = argparse.ArgumentParser(prog="masc-plot-policy")
+    parser.add_argument("csv", help="trajectory CSV (masc-trajectory), e.g. sto/csv_results/PPO_Sto0_..._trajectory.csv")
+    parser.add_argument("--seed", type=int, default=None, help="seed of the episode (default: the least total cost)")
+    parser.add_argument("--env", default=None, help="title, e.g. Sto0 (default: taken from the file name)")
+    parser.add_argument("--prefix", default="PPO", help="start of the figure names (default: PPO)")
+    parser.add_argument("--order-days", type=int, default=30, help="days of the order figure (default: 30)")
+    parser.add_argument("--inventory-days", type=int, default=100, help="days of the inventory figure (default: 100)")
+    parser.add_argument("--out-dir", default=".", help="directory of the figures (default: current)")
+    a = parser.parse_args(argv)
+    trajectories = read_trajectory(a.csv)
+    seed = best_seed(trajectories) if a.seed is None else a.seed
+    env = a.env or env_from_path(os.path.basename(a.csv).replace("_", os.sep)) or "policy"
+    costs = ", ".join(f"{s}: {-tr['Cost'].sum():g}" for s, tr in trajectories.items())
+    print(f"seed {seed}, total cost {-trajectories[seed]['Cost'].sum():g} (all seeds: {costs})")
+    os.makedirs(a.out_dir, exist_ok=True)
+    plot_policy_orders(trajectories[seed], env, os.path.join(a.out_dir, f"{a.prefix}_OP{env}_seed{seed}.png"),
+                       a.order_days)
+    plot_policy_inventory(trajectories[seed], env, os.path.join(a.out_dir, f"{a.prefix}_Rinv{env}_seed{seed}.png"),
+                          a.inventory_days)
     return 0
 
 

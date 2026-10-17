@@ -21,6 +21,8 @@
 #   J=$(RUN_NAME=$RUN sbatch --parsable ../jobs/job_continual_seeds.sh --lr 0.0001 --timesteps-per-phase 1000000 \
 #       --num-env-runners 4 --no-stockout-termination)
 #   sbatch --dependency=afterany:${J%%_*} ../jobs/job_continual_plot.sh PPOcon-sto_models/0-01-1/$RUN
+# Transformer PPO: add --model transformer (models in TPPOcon-*_models/, figure TPPOcon_*.png); it is slower than PPO,
+# give it more time and memory, e.g. sbatch --time=60:00:00 --mem=32G ... --model transformer
 # Extra arguments go to masc-continual.
 
 TASK=${TASK:-0-01-1}

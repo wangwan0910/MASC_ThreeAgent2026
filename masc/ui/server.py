@@ -176,7 +176,7 @@ def _read_json(path):
 
 
 def find_runs(root, max_depth=4):
-    """Training runs (<x>_logs/<env>/<time>/) and continual learning runs (PPOcon*_models/<task>/<stamp>/lr=<lr>/)
+    """Training runs (<x>_logs/<env>/<time>/) and continual learning runs ([T]PPOcon*_models/<task>/<stamp>/lr=<lr>/)
     under root, newest first."""
     runs = []
     root = os.path.abspath(root)
@@ -195,7 +195,7 @@ def find_runs(root, max_depth=4):
                     if os.path.isdir(stamp):
                         runs.append(_training_run(root, stamp, env))
             dirnames[:] = []
-        elif name.startswith("PPOcon") and name.endswith("_models"):
+        elif name.startswith(("PPOcon", "TPPOcon")) and name.endswith("_models"):
             for status_dir in sorted(glob.glob(os.path.join(glob.escape(dirpath), "*", "*", "lr=*"))):
                 runs.append(_continual_run(root, status_dir))
             dirnames[:] = []

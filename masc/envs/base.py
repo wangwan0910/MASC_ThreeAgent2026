@@ -136,20 +136,29 @@ class POSingAgent1W1F:
         self.r = -sum(self.agent_costs())
         return self.r
 
-    # action matrix that is really applied: fixed service times override the policy's choice
+    # action matrix that is really applied: service times are set by the environment (fixed or stock based, see
+    # execute()), and an agent with an order still in transit does not order again (order quantity 0)
     def effective_action(self, action):
         action = action.copy()
         for k, a in enumerate(self.agents):
-            action[0, k] = a.service_time(action[:, k])
+            if a.order_in_transit():
+                action[1, k] = 0
         return action
 
 # execute function to update the state based on the action taken by the planner agent, and return the new state.
+    # action: effective action; its service time row is filled with the service times really given downstream
     def execute(self, action):
-        # lead time of agent k = service time of its supplier + its own processing time
+        # lead time of agent k = service time of its supplier + its own processing time; the supplier places its
+        # own order first, so that an out of stock supplier knows when its replenishment arrives
         supplier_service_time = 0  # the external supplier of the first agent has 0 service time
         for k, a in enumerate(self.agents):
+            if k > 0:
+                supplier = self.agents[k - 1]
+                supplier_service_time = supplier.service_time(action[:, k - 1], action[1, k])
+                action[0, k - 1] = supplier_service_time
             a.place_order(action[:, k], supplier_service_time)
-            supplier_service_time = a.service_time(action[:, k])
+        # the most downstream agent serves the customer
+        action[0, -1] = self.agents[-1].service_time(action[:, -1])
         # reset actionTrigger
         self.actionTrigger = False
 

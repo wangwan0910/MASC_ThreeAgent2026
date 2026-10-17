@@ -7,12 +7,18 @@ from .base_agent import BaseAgent
 class Retailer(BaseAgent):
     name = "retailer"
     holding_cost = 1000
-    processing_time = 0
+    # transport from the warehouse: 1 day when the warehouse ships from stock
+    processing_time = 1
     init_inventory = 10
     init_reorder_point = 5
     fixed_service_time = 0
-    # the retailer chooses its reorder point
-    action_nvec = (1, 20, 10)
+    # the retailer chooses its reorder point (0-29); order quantity 0-30
+    action_nvec = (1, 31, 30)
+
+    def lead_time(self, supplier_service_time):
+        """Warehouse in stock: processing time (1 day). Out of stock: the goods are forwarded on the day the
+        warehouse's replenishment arrives (3 days if the factory had them in stock, 4 days otherwise)."""
+        return max(self.processing_time, supplier_service_time)
 
     def serve_demand(self, demand):
         """Serve the customer demand; returns True if there was a stockout."""

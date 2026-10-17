@@ -21,7 +21,7 @@ How to add a new agent
            holding_cost = 50
            processing_time = 2
            fixed_service_time = 2          # service time it gives to its downstream stage
-           action_nvec = (3, 20, 1)        # serviceTime, orderToSupplier, reorderPoint
+           action_nvec = (1, 31, 1)        # serviceTime (fixed, so 1 value), orderToSupplier, reorderPoint
 
 2. Export it in masc/agents/__init__.py.
 3. Put it into the chain in the environment's make_agents(), e.g.
@@ -44,8 +44,11 @@ class BaseAgent:
     init_reorder_point = 0
     # service time this agent gives to its downstream stage; None = taken from the action
     fixed_service_time = None
+    # True: the service time depends on the stock (0 if the agent can fill the downstream order from its inventory,
+    # otherwise the days until its own replenishment arrives); overrides the action
+    stock_based_service = False
     # number of discrete action values for (serviceTime, orderToSupplier, reorderPoint)
-    action_nvec = (1, 20, 1)
+    action_nvec = (1, 31, 1)
     max_days_to_delivery = 9
     # observation cap of the episode total stockouts
     max_total_stockout = 200
@@ -56,7 +59,7 @@ class BaseAgent:
         "reorder_point",
         "pending_delivery",
         "days_to_delivery",
-        "stockout_cum",       # stockouts since the last order (reset when an order is placed)
+        "stockout_cum",       # stockouts since the last reorder day (reset on every reorder day)
         "processing_time",
         "stockout_daily",     # stockouts of the current day
         "capacity",
@@ -96,8 +99,10 @@ class BaseAgent:
         """Number of discrete values of each observation field, in STATE_FIELDS order."""
         n = self.capacity + 1
         # reorder point is only observable for agents that choose it
-        reorder_point_n = n if self.action_nvec[2] > 1 else 1
-        return [n, reorder_point_n, n, self.max_days_to_delivery + 1, n,
+        reorder_point_n = max(n, self.action_nvec[2]) if self.action_nvec[2] > 1 else 1
+        # pending delivery can be as large as the largest order
+        pending_n = max(n, self.action_nvec[1])
+        return [n, reorder_point_n, pending_n, self.max_days_to_delivery + 1, n,
                 self.processing_time + 1, n, n, self.max_total_stockout + 1]
 
     # ----- daily dynamics -----
@@ -133,18 +138,37 @@ class BaseAgent:
         self.inventory = int(np.clip(self.inventory, 0, self.capacity - 1))
 
     # ----- action -----
-    def service_time(self, action):
-        """Service time given to the downstream stage. action: this agent's action column."""
+    def order_in_transit(self):
+        return self.days_to_delivery > 0
+
+    def service_time(self, action, downstream_order=0):
+        """Service time given to the downstream stage. action: this agent's action column,
+        downstream_order: quantity ordered by the downstream stage. Called after this agent placed its own order."""
         if self.fixed_service_time is not None:
             return self.fixed_service_time
+        if self.stock_based_service:
+            # in stock: ships at once; out of stock: waits for its own replenishment
+            return 0 if self.inventory >= downstream_order else self.days_to_delivery
         return int(action[0])
 
+    def lead_time(self, supplier_service_time):
+        """Days until the order arrives: service time of the supplier + own processing time."""
+        return supplier_service_time + self.processing_time
+
     def place_order(self, action, supplier_service_time):
-        """Apply this agent's action column when the planner orders."""
-        self.pending_delivery = int(action[1])
-        self.days_to_delivery = supplier_service_time + self.processing_time
+        """Apply this agent's action column when the planner orders. An agent with an order still in transit
+        keeps it (one outstanding order per agent); its order quantity is 0 in the effective action.
+        An order of 0 units is no order: nothing is in transit, so the agent can order again on the next reorder day."""
         self.reorder_point = int(action[2])
+        # the stockouts since the last reorder day have been charged
         self.stockout_cum = 0
+        if self.order_in_transit():
+            return
+        quantity = int(action[1])
+        if quantity == 0:
+            return
+        self.pending_delivery = quantity
+        self.days_to_delivery = self.lead_time(supplier_service_time)
 
     # ----- reward -----
     def cost(self, stockouts):

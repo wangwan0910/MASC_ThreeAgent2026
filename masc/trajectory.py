@@ -6,6 +6,7 @@ at the end of the training, and by the masc-trajectory command for an existing r
 
     masc-trajectory tu_seeds_logs/Bat10/1791804852                  # -> <run root>/csv_results/..._trajectory.csv
     masc-trajectory tu2_seeds_logs/Sto1/1791808000 --lr 0.0001 --csv-seed 0 --out sto1.csv
+    masc-trajectory --random --env BatSupplyEnv-v1 --out-dir bat  # random actions (no training), seeds 0..4
 
 Columns: seed (training seed of the trial), demand_seed (seed of the demand of the episode), day (1..T), then the
 columns of the environment's save_to_csv: <agent>_<state field> (inventory, reorderpoint, pendingDelivery,
@@ -33,8 +34,11 @@ PLOTTED = ("converged", "completed")   # verdicts of the trials whose policies a
 
 
 def rollout_episode(checkpoint, env_config, seed=0):
-    """One episode of the trained policies (deterministic actions, state carried for the transformer policies).
+    """One episode of the trained policies (deterministic actions, state carried for the transformer policies), or of
+    random actions (uniform over the action spaces, seeded with `seed`) if checkpoint is None.
     Returns the wrapped single-planner environment, whose histories hold the whole episode."""
+    if checkpoint is None:
+        return rollout_random(env_config, seed)
     import torch
     import tree
     from ray.rllib.core.rl_module.multi_rl_module import MultiRLModule
@@ -59,6 +63,19 @@ def rollout_episode(checkpoint, env_config, seed=0):
                 actions[aid] = dist.to_deterministic().sample()[0].numpy()
             obs, _, terminateds, truncateds, _ = env.step(actions)
             done = terminateds["__all__"] or truncateds["__all__"]
+    return env.env
+
+
+def rollout_random(env_config, seed=0):
+    """One episode of random actions: the policy before any optimisation."""
+    env = SupplyChainMARLEnv(env_config)
+    env.reset(seed=seed)
+    for k, aid in enumerate(env.possible_agents):
+        env.action_spaces[aid].seed(seed * 100 + k)
+    done = False
+    while not done:
+        _, _, terminateds, truncateds, _ = env.step({aid: env.action_spaces[aid].sample() for aid in env.agents})
+        done = terminateds["__all__"] or truncateds["__all__"]
     return env.env
 
 
@@ -136,12 +153,22 @@ def trial_params(checkpoint):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="masc-trajectory", description=__doc__.split("\n\n")[0].strip())
-    parser.add_argument("run_dir", help="log directory of a run, <dir>_logs/<env>/<time> (with training_status.json)")
+    parser.add_argument("run_dir", nargs="?",
+                        help="log directory of a run, <dir>_logs/<env>/<time> (with training_status.json)")
+    parser.add_argument("--random", action="store_true",
+                        help="random actions instead of trained policies (no run_dir), one episode per --seeds")
+    parser.add_argument("--env", default="BatSupplyEnv-v1", help="environment of --random (default BatSupplyEnv-v1)")
+    parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2, 3, 4], help="seeds of --random")
+    parser.add_argument("--out-dir", default=".", help="directory of csv_results/ for --random (default: current)")
     parser.add_argument("--lr", type=float, default=None, help="trials of this learning rate (default: the best)")
     parser.add_argument("--csv-seed", type=int, default=None,
                         help="demand seed of all the episodes (default: the training seed of every trial)")
     parser.add_argument("--out", default=None, help="CSV file (default: <run root>/csv_results/<name>_trajectory.csv)")
     args = parser.parse_args(argv)
+    if args.random:
+        return main_random(args)
+    if args.run_dir is None:
+        parser.error("run_dir is required (or --random)")
     run_dir = os.path.abspath(args.run_dir)
     trials, lr = run_trials(run_dir, args.lr)
     env_config = trial_params(trials[0]["checkpoint"])["env_config"]
@@ -160,6 +187,22 @@ def main(argv=None):
                                                 f"_{datetime.datetime.now():%Y%m%d-%H%M%S}_trajectory.csv")
     out = unique_path(out)
     print_summary(out, write_trajectories(out, trials, env_config, args.csv_seed))
+    return 0
+
+
+def main_random(args):
+    """Trajectory CSV of random actions (the policy before any optimisation), full episodes (no stockout
+    termination), one episode per seed: <out-dir>/csv_results/Random_<env>_<demand>_<n>seeds_<time>_trajectory.csv."""
+    env_config = {"env_class": args.env, "max_stockout_days": 0}
+    out = args.out
+    if out is None:
+        os.makedirs(os.path.join(args.out_dir, "csv_results"), exist_ok=True)
+        out = os.path.join(args.out_dir, "csv_results",
+                           f"Random_{ENV_SHORT_NAMES.get(args.env, args.env)}_{demand_tag(env_config)}"
+                           f"_{len(args.seeds)}seeds_{datetime.datetime.now():%Y%m%d-%H%M%S}_trajectory.csv")
+    out = unique_path(out)
+    trials = [{"checkpoint": None, "seed": s} for s in args.seeds]
+    print_summary(out, write_trajectories(out, trials, env_config))
     return 0
 
 

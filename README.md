@@ -7,32 +7,6 @@ compared: a feed-forward network (**PPO**) and a gated transformer (**Transforme
 single-environment learning with several random seeds, continual learning across environments, and a local web
 interface. Everything is one pip-installable Python package, `masc`.
 
-### Directory structure
-
-```
-MASC_Code/
-├── pyproject.toml              package definition (pip install -e .) and command-line entry points
-├── requirements.txt            exact dependency versions (Python 3.10, CPU build of PyTorch)
-├── masc/                       the Python package
-│   ├── agents/                 supply chain stages: base_agent.py (template), factory.py, warehouse.py, retailer.py
-│   ├── demand.py               customer demand: DemandGenerator (daily draw), DemandAgent (batch demand)
-│   ├── envs/                   single-planner environments
-│   │   ├── base.py             the shared supply chain (POSingAgent1W1F)
-│   │   ├── stochastic.py       stochastic demand: Stocha_P0 / Stocha_P01 / Stocha_P1
-│   │   └── batch.py            batch demand: Batch_L10 / Batch_L7 / Batch_L3
-│   ├── marl_env.py             multi-agent wrapper, environment ids, PPO config (build_ppo_config), Ray start-up
-│   ├── models/                 pluggable agent networks: mlp, transformer (transformer.py)
-│   ├── train.py                single-environment PPO, training monitor, figures, CSV    → masc-train
-│   ├── main_transformerPPO.py  the same with transformer policies                         → masc-train-transformer
-│   ├── trajectory.py           trajectory CSV of the trained policies, every seed           → masc-trajectory
-│   ├── continual.py            continual learning between environments (6 tasks)          → masc-continual
-│   ├── plotting.py             training curves, continual learning curves                 → masc-plot, masc-plot-continual
-│   └── ui/                     local web interface for a Mac (server.py, static/index.html) → masc-ui
-├── jobs/                       SLURM scripts: job_train.sh, job_continual.sh, job_continual_seeds.sh, job_continual_plot.sh
-├── tests/                      pytest suite (no Ray cluster needed)
-└── assets/                     figures of this README
-```
-
 ### Environment IDs
 
 | Environment id | Class | Short name | Customer demand |
@@ -49,30 +23,87 @@ The short names are used in figure names, legends and log directories. Old class
 
 ### 🌃 Supply chain environment
 
-- **Episode**: T = 100 days. Every day the stages receive their deliveries (an upstream stage can only ship what it
-  has in stock; the missing part is a stockout of that stage and is not delivered later), the retailer serves the
-  customer demand, and inventories are clipped to the capacity (30).
-- **Event-driven decisions**: the three agents act only on *reorder days*, when the retailer's inventory reaches its
-  reorder point and no delivery is pending. One RLlib step is one decision; the days in between are simulated.
-- **Observation** of an agent: its own 9 state fields (inventory, reorder point, pending delivery, days to delivery,
-  stockouts since the last order, processing time, stockouts of the day, capacity, stockouts of the episode),
-  scaled to [0, 1]. Each agent sees only its own state.
-- **Action**: the order quantity (0–19) of every stage, and the reorder point (0–9) of the retailer.
+**Chain**: external supplier → factory → warehouse → retailer → customer. Every stage is one agent with its own
+policy (no parameter sharing). The supply chain is defined in `masc/envs/base.py` and `masc/agents/`.
 
-| Agent | Holding cost (per unit) | Processing time | Service time to downstream | Lead time |
+| Agent | Holding cost (per unit per day) | Processing time | Initial inventory | Inventory range |
 |---|---|---|---|---|
-| Factory | 1000 | 1 | 1 | 1 |
-| Warehouse | 5 | 3 | 4 | 4 |
-| Retailer | 1000 | 0 | 0 | 4 |
+| Factory | 1000 | 1 | 0 | 0–29 |
+| Warehouse | 5 | 3 | 0 | 0–29 |
+| Retailer | 1000 | 1 | 10 (initial reorder point 5) | 0–29 |
 
-- **Cost** (on reorder days): inventory × holding cost + stockouts since the last order × 10000. With
-  `final_costs` (default) the costs not settled yet are charged at the end of the episode.
-- **Reward**: `reward_mode="team"` (default, every agent gets minus the total cost), `"individual"` or `"mixed"`,
-  scaled by `reward_scale = 1e-4`.
-- **Stockout termination**: the original environment ends an episode after 12 stockout days. The experiments use
-  `--no-stockout-termination` (every episode runs 100 days), see [Design notes](#design-notes).
+A stockout costs 10000 per unit, at every stage. Inventory above 29 is lost at the end of the day.
+
+**Customer demand** (see [Environment IDs](#environment-ids)): the normal draw is rounded down, so with σ = 0.1 a
+draw just below 2 gives 1. The mean demand is about 1.5 in Sto01 and in the batch environments, and 2 in Sto0.
+
+**One day** (`Pre_step`), in this order:
+1. **Deliveries**, from upstream to downstream. When an order is due, the supplier ships min(order, its
+   inventory). The missing part is a stockout of the supplier and is lost (not delivered later). The external
+   supplier is unlimited.
+2. **Customer demand**: the retailer serves the demand from its inventory, the goods that arrived this day included.
+   Unmet demand is a stockout and is lost (lost sales).
+3. **Reorder trigger**: the day is a *reorder day* if the retailer's inventory ≤ its reorder point and the retailer
+   has no order in transit.
+4. **Capacity**: inventories are clipped to 0–29.
+
+**Actions (reorder days only)**: the three agents act on the same reorder days; the factory and the warehouse have
+no trigger of their own.
+
+| Agent | Order quantity | Reorder point | Service time action |
+|---|---|---|---|
+| Factory | 0–30 | not used | none (set by the environment) |
+| Warehouse | 0–30 | not used | none (set by the environment) |
+| Retailer | 0–30 | 0–29 | none (always 0) |
+
+The service time dimension has a single value (`action_nvec` first entry 1) for every agent, so the policies output
+no logits for it. The orders are placed from upstream to downstream. An agent with an order still in transit does
+not order again: the order in transit is kept and the recorded order quantity is 0. An order of 0 units is no order:
+nothing is put in transit, so the agent can order again on the next reorder day.
+
+**Lead times** depend on the stock of the supplier on the reorder day ("in stock" = inventory ≥ the downstream
+order):
+
+| Order of | Condition | Lead time (days) |
+|---|---|---|
+| Factory | always (external supplier) | 1 |
+| Warehouse | factory in stock (ST0 = 0) | 3 |
+| | factory out of stock (ST0 = 1, it waits for its own replenishment) | 4 |
+| Retailer | warehouse in stock | 1 |
+| | warehouse out of stock, factory in stock | 3 (forwarded the day the warehouse's replenishment arrives) |
+| | warehouse and factory out of stock | 4 |
+| | warehouse out of stock with an earlier order still in transit | days left of that order (at least 1) |
+| | warehouse out of stock with nothing in transit | 1 (the warehouse ships what it has, the rest is lost) |
+
+An order placed at the end of day d with lead time L arrives at the start of day d + L and can be sold that day.
+From the retailer's point of view the lead time is at most 4 days.
+
+**Cost, reward and return**:
+- **Cost** on a reorder day (before the actions are executed): for every stage, inventory × holding cost + stockouts
+  since the last reorder day × 10000. The stockout counter is reset on every reorder day.
+- **Reward** (sparse, reorder days only): `reward_mode="team"` (default, every agent gets minus the total cost),
+  `"individual"` (minus its own cost) or `"mixed"`, scaled by `reward_scale = 1e-4`. With `final_costs` (default)
+  the costs not settled yet (stockouts since the last reorder day) are charged on the last step of the episode. The
+  cost of the first reorder day comes from the initial state and is not a reward.
 - **`team_return`**: the episode return reported everywhere (training curves, figures, CSV files) is minus the total
   cost of the episode in original cost units: every reorder day, the first one included, plus the final settlement.
+
+**Episode and RLlib steps**:
+- **Episode**: T = 100 days. The original environment ends an episode after 12 days with a retailer stockout; the
+  experiments use `--no-stockout-termination` (every episode runs 100 days), see [Design notes](#design-notes).
+- **Event driven**: one RLlib step is one reorder day. The days in between are simulated without action and give no
+  training sample, so gamma discounts per decision, not per day.
+- **Observation** of an agent: its own 9 state fields (inventory, reorder point, pending delivery, days to delivery,
+  stockouts since the last reorder day, processing time, stockouts of the day, capacity, stockouts of the episode),
+  scaled to [0, 1]. Each agent sees only its own state.
+
+**Points to keep in mind**:
+- The factory orders on every reorder day, even when the warehouse does not order; the policy has to learn to order
+  0 at the factory, otherwise the factory inventory grows.
+- A supplier with part of the order in stock counts as out of stock: the order gets the longer lead time, and the
+  supplier ships what it has on the delivery day.
+- The lead times and action ranges above date from 2026-10-15. Models trained before (fixed lead times 1 / 4 / 4,
+  orders 0–19, reorder point 0–9) are not comparable and must be retrained.
 
 ### PPO hyperparameters
 
@@ -90,30 +121,45 @@ The short names are used in figure names, legends and log directories. Old class
 
 ### TPPO hyperparameters
 
-Transformer PPO uses the PPO settings above with a gated transformer (model `transformer`,
-[`masc/models/transformer.py`](masc/models/transformer.py)) in place of the MLPs. It follows RLlib's
+Transformer PPO uses the PPO settings above, with a gated transformer (GTrXL, [transformer.py](masc/models/transformer.py))
+in place of the MLPs, following RLlib's
 [attention net example](https://github.com/ray-project/ray/blob/ray-2.6.1/rllib/examples/attention_net.py)
-(PPO + GTrXL, old API stack), implemented as a stateful RLModule for the new API stack. Every agent keeps the last
-`memory` observations of the episode as its state and attends over the window *memory + current observation*
-(positions before the start of the episode are masked): linear input projection + position embedding →
-`num_layers` × [LayerNorm → multi-head attention → GRU gate, LayerNorm → position-wise MLP → GRU gate] → LayerNorm →
-policy head (MultiDiscrete logits) and value head, sharing the transformer. Step-by-step sampling and sequence
-training give identical outputs.
+(PPO + GTrXL). The policy and value heads share the transformer.
 
-| Option | Default | attention_net.py option |
-|---|---|---|
-| `--memory` | 20 | `attention_memory_inference` / `attention_memory_training` |
-| `--num-layers` | 1 | `attention_num_transformer_units` |
-| `--d-model` | 64 | `attention_dim` |
-| `--num-heads` | 2 | `attention_num_heads` |
-| `--head-dim` | 32 | `attention_head_dim` |
-| `--ff-dim` | 64 | `attention_position_wise_mlp_dim` |
-| `--gate-bias` | 2.0 | `attention_init_gru_gate_bias` |
-| `--max-seq-len` | 20 | `max_seq_len` |
-| `--head-hiddens` | 64 | hidden layers of the policy and value heads |
+Every agent keeps the last $M$ observations of the episode. At step $t$ it attends over the window of $M + 1$
+observations $o_{t-M}, \dots, o_t$ (positions before the start of the episode are masked):
+
+$$x^{(0)}_i = W_{in}\, o_{t-M+i} + p_i, \qquad i = 0, \dots, M$$
+
+For every layer $l = 1, \dots, L$:
+
+$$y = \mathrm{ReLU}\big(\mathrm{MHA}(\mathrm{LN}(x^{(l-1)}))\big), \qquad u = g\big(x^{(l-1)}, y\big)$$
+
+$$x^{(l)} = g\Big(u,\ \mathrm{ReLU}\big(W_2\, \mathrm{ReLU}(W_1\, \mathrm{LN}(u))\big)\Big)$$
+
+with the GRU gate $g(x, y)$:
+
+$$r = \sigma(W_r y + U_r x), \qquad z = \sigma(W_z y + U_z x - b_g), \qquad
+h = \tanh\big(W_h y + U_h (r \odot x)\big), \qquad g(x, y) = (1 - z) \odot x + z \odot h$$
+
+The embedding of the current step is $e_t = \mathrm{LN}(x^{(L)}_M)$; the policy head gives the MultiDiscrete logits
+$\pi(a_t \mid o_{t-M..t})$ and the value head $V(o_{t-M..t})$, both MLPs on $e_t$.
+
+| Parameter | Value |
+|---|---|
+| Memory length $M$ (window $M + 1$) | 20 |
+| Transformer layers $L$ | 1 |
+| Model dimension $d_{model}$ | 64 |
+| Attention heads $H$ / head dimension $d_h$ | 2 / 32 |
+| Position-wise MLP dimension $d_{ff}$ | 64 |
+| GRU gate bias $b_g$ | 2.0 (gates start close to the identity) |
+| Maximum training sequence length | 20 |
+| Policy / value heads | MLP 64, tanh, on the shared $e_t$ |
+| Other PPO settings | as in [PPO hyperparameters](#ppo-hyperparameters) |
 
 Differences from the old GTrXL: the memory holds observations rather than the hidden states of every layer, and
-previous actions / rewards are not fed to the network.
+previous actions / rewards are not fed to the network. Step-by-step sampling and sequence training give identical
+outputs.
 
 ### 🎬 Demo
 
@@ -152,9 +198,38 @@ masc-train-transformer --env StoSupplyEnv-v3 --no-stockout-termination --lr 0.00
     --no-early-stop --total-timesteps 2000000 --num-env-runners 2 --dir tu2_seeds
 ```
 
-| PPO, Bat10, 5 seeds | Transformer PPO, Bat10, 5 seeds |
-|---|---|
-| ![PPO Bat10](assets/PPO_Bat10_5seeds.png) | ![TPPO Bat10](assets/TPPO_Bat10_5seeds.png) |
+**PPO results** (environment of 2026-10-15: stock-dependent lead times, orders 0–30, reorder point 0–29; 5 seeds,
+mean ± std):
+
+| Bat10 | Bat7 | Bat3 |
+|---|---|---|
+| ![PPO Bat10](assets/PPO_Bat10_5seeds.png) | ![PPO Bat7](assets/PPO_Bat7_5seeds.png) | ![PPO Bat3](assets/PPO_Bat3_5seeds.png) |
+| **Sto0** | **Sto01** | **Sto1** |
+| ![PPO Sto0](assets/PPO_Sto0_5seeds.png) | ![PPO Sto01](assets/PPO_Sto01_5seeds.png) | ![PPO Sto1](assets/PPO_Sto1_5seeds.png) |
+
+Total cost of the trained policies (one deterministic 100-day episode per seed, from the trajectory CSV):
+
+| | Bat10 | Bat7 | Bat3 | Sto0 | Sto01 | Sto1 |
+|---|---|---|---|---|---|---|
+| Mean ± std of 5 seeds | 43,597 ± 11,730 | 38,804 ± 16,666 | 59,042 ± 12,776 | 64,917 ± 30,105 | 31,497 ± 14,085 | 47,847 ± 29,351 |
+| Best seed | 32,355 | 18,500 | 37,500 | 30,240 | 14,760 | 20,660 |
+
+**Learned policies** (seed with the least total cost, `masc-plot-policy`, 100 days). Order figures: orders of the three
+agents and the retailer's reorder point, which is only set on reorder days (markers) and kept in between. Inventory
+figures: inventory of the three agents and the retailer's cumulative stockout. In every environment most seeds
+converge to the same policy: retailer orders ≈ 12, warehouse and factory ≈ 25, reorder point 1. The mean demand is
+almost the same in all environments (≈ 1.5 per day after rounding down, 2 in Sto0) and so are the costs and lead
+times.
+
+| | Bat10 | Bat7 | Bat3 | Sto0 | Sto01 | Sto1 |
+|---|---|---|---|---|---|---|
+| Orders | ![](assets/policy/PPO_OPBat10_seed3.png) | ![](assets/policy/PPO_OPBat7_seed2.png) | ![](assets/policy/PPO_OPBat3_seed3.png) | ![](assets/policy/PPO_OPSto0_seed4.png) | ![](assets/policy/PPO_OPSto01_seed1.png) | ![](assets/policy/PPO_OPSto1_seed1.png) |
+| Inventory | ![](assets/policy/PPO_RinvBat10_seed3.png) | ![](assets/policy/PPO_RinvBat7_seed2.png) | ![](assets/policy/PPO_RinvBat3_seed3.png) | ![](assets/policy/PPO_RinvSto0_seed4.png) | ![](assets/policy/PPO_RinvSto01_seed1.png) | ![](assets/policy/PPO_RinvSto1_seed1.png) |
+
+Transformer PPO, Bat10, 5 seeds (environment before 2026-10-15, fixed lead times and orders 0–19, not comparable
+with the PPO results above):
+
+![TPPO Bat10](assets/TPPO_Bat10_5seeds.png)
 
 **Training monitor.** Every iteration the reward curve of a trial is checked over moving windows of
 `--conv-window` iterations: *converged* (stable within `--conv-tol` for `--conv-patience` iterations, near its best
@@ -197,7 +272,8 @@ policy at 3M steps is identical to the one at convergence; the gap comes from th
 hence the 5-seed experiments.
 
 **Best fixed policies** (grid search over a common order quantity q of all stages or upstream q = 19 and the retailer
-reorder point rp, evaluated on 50 test seeds, no stockout termination):
+reorder point rp, evaluated on 50 test seeds, no stockout termination; computed with the environment before
+2026-10-15, fixed lead times and orders 0–19):
 
 | | Bat10 | Bat7 | Bat3 | Sto0 | Sto01 | Sto1 |
 |---|---|---|---|---|---|---|
@@ -237,6 +313,17 @@ return of every phase. The figure is drawn once at the end, in the style of
 (mean ± std of the seeds), dotted lines and labels at the start of every round, e.g.
 `PPOcon_Sto0-Sto01-Sto1_3rounds_1Msteps-per-phase_lr0.0001_5seeds_<run>.png`. A monitor stops a task that diverges,
 collapses or does not learn in the first phase (`--no-monitor` to switch it off).
+
+**PPO results** (environment of 2026-10-15, 1M steps per phase, lr 1e-4, no stockout termination, mean ± std of
+5 seeds; the inset zooms on the converged part):
+
+| Sto0 → Sto01 → Sto1 | Sto1 → Sto01 → Sto0 |
+|---|---|
+| ![](assets/continual/PPOcon_Sto0-Sto01-Sto1_3rounds.png) | ![](assets/continual/PPOcon_Sto1-Sto01-Sto0_3rounds.png) |
+| **Bat3 → Bat7 → Bat10** | **Bat10 → Bat7 → Bat3** |
+| ![](assets/continual/PPOcon_Bat3-Bat7-Bat10_3rounds.png) | ![](assets/continual/PPOcon_Bat10-Bat7-Bat3_3rounds.png) |
+| **Bat10 → Sto1** | **Sto1 → Bat10** |
+| ![](assets/continual/PPOcon_Bat10-Sto1_5rounds.png) | still training |
 
 ---
 
@@ -314,32 +401,6 @@ Every command has `--help`. Main options of `masc-train` / `masc-train-transform
 | `--num-env-runners` | 1 | sampling workers per trial (a trial uses 1 + n CPUs) |
 | `--out-dir`, `--dir`, `--tag` | `.`, `tu`, none | output directory, log directory, suffix of the figure / CSV names |
 
-### On a SLURM cluster
-
-The job scripts write everything to the directory they are submitted from.
-
-| Script | Array tasks |
-|---|---|
-| `jobs/job_train.sh` | 0 Bat10, 1 Bat7, 2 Bat3, 3 Sto1, 4 Sto01, 5 Sto0 (`ALGO=ppo` or `ALGO=transformer`) |
-| `jobs/job_continual.sh` | 0 `0-01-1`, 1 `1-01-0`, 2 `3-7-10`, 3 `10-7-3`, 4 `bat10-sto1`, 5 `sto1-bat10` |
-| `jobs/job_continual_seeds.sh` | one task per seed of one continual learning task (`TASK`, default `0-01-1`) |
-| `jobs/job_continual_plot.sh` | figure of all the seeds of a continual learning experiment |
-
-```bash
-mkdir -p runs && cd runs
-ARGS="--seeds 0 1 2 3 4 --lr 0.0001 --no-early-stop --total-timesteps 2000000 --num-env-runners 2"
-sbatch ../jobs/job_train.sh $ARGS --dir tu_seeds                                   # PPO, six environments
-ALGO=transformer sbatch --mem=40G ../jobs/job_train.sh $ARGS --dir tu2_seeds       # Transformer PPO
-RUN=$(date +%Y%m%d-%H%M%S)
-J=$(RUN_NAME=$RUN sbatch --parsable ../jobs/job_continual_seeds.sh --lr 0.0001 \
-    --timesteps-per-phase 1000000 --num-env-runners 4 --no-stockout-termination)
-sbatch --dependency=afterany:${J%%_*} ../jobs/job_continual_plot.sh PPOcon-sto_models/0-01-1/$RUN
-```
-
-Notes: Transformer PPO with five seeds needs up to ~22 GB per job (request 40 GB) and about 10 h for 2M steps. The
-scripts start Ray with a random delay and retry once if it fails to start (many jobs on one node); a run that does
-not converge exits with code 1 (SLURM state FAILED, the reason is in `training_status.json`).
-
 ### Python
 
 ```python
@@ -354,16 +415,6 @@ obs, rewards, terminated, truncated, info = env.step(
 config = build_ppo_config({"env_class": "BatSupplyEnv-v1", "max_stockout_days": 0}, lr=1e-4, seed=0,
                           model="transformer", model_config={"memory": 30})
 ```
-
-### Extending
-
-- **A new network**: write a TorchRLModule (with `ValueFunctionAPI` for PPO), register a builder with
-  `masc.models.register_model("<name>", defaults={...})`, use it with `build_ppo_config(model="<name>")`, add an entry
-  script like `masc/main_transformerPPO.py`, and one line in `COMMANDS` / `ALGORITHMS` of `masc/ui/server.py`.
-- **A new stage**: derive from `BaseAgent` in `masc/agents/` and add it to `make_agents()`; spaces, costs, CSV columns
-  and the wrapper follow the list of agents (the last one must be a `Retailer`).
-- **A new demand process**: derive from `POSingAgent1W1F` in `masc/envs/`, implement `gen_demand()`, and register an
-  id in `ENV_IDS` / `ENV_SHORT_NAMES` and a colour in `masc.plotting.ENV_COLORS`.
 
 ---
 

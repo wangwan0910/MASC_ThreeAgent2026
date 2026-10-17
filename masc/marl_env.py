@@ -258,6 +258,9 @@ def init_ray(**kwargs):
         # Ray's default object store is ~30% of the node memory, per instance: with many jobs on one node (11 jobs on
         # red6066, 2026-10-12) the Ray instances failed to start. The training needs little object store memory
         kwargs.setdefault("object_store_memory", 2 * 1024 ** 3)
+        # Ray's memory monitor kills workers when the whole node is above 95% memory, also when the memory is used by
+        # other jobs (node at 744 / 755 GB, job at 0.3 GB, 2026-10-15): SLURM already limits the memory of the job
+        os.environ.setdefault("RAY_memory_monitor_refresh_ms", "0")
     pythonpath = os.pathsep.join([PACKAGE_ROOT, os.environ.get("PYTHONPATH", "")]).rstrip(os.pathsep)
     ray.init(runtime_env={"env_vars": {"PYTHONPATH": pythonpath}}, ignore_reinit_error=True, **kwargs)
 
@@ -313,24 +316,38 @@ def build_ppo_config(env_config, lr=3e-4, hiddens=(64, 64),
 def evaluate(algo, env_config, n_steps=1000):
     """Run the trained (deterministic) policies for n_steps decisions, return the mean episode team reward
     (total cost of the supply chain, same as the episode return of the original single-planner environment).
-    Only for feed-forward policies (no recurrent / transformer state)."""
+    The state of stateful policies (transformer memory) is carried over the steps and reset with the episode."""
     import torch
+    import tree
     env = SupplyChainMARLEnv(env_config)
     modules = {aid: algo.get_module(aid) for aid in env.possible_agents}
+
+    def initial_states():
+        return {aid: tree.map_structure(lambda x: torch.as_tensor(x)[None], m.get_initial_state())
+                for aid, m in modules.items() if m.is_stateful()}
+
     obs, infos = env.reset()
+    states = initial_states()
     returns, ep_return = [], infos[env.possible_agents[0]]["team_reward"]
-    for _ in range(n_steps):
-        actions = {}
-        for aid, module in modules.items():
-            out = module.forward_inference({"obs": torch.from_numpy(obs[aid][None])})
-            dist = module.get_inference_action_dist_cls().from_logits(out["action_dist_inputs"])
-            actions[aid] = dist.to_deterministic().sample()[0].numpy()
-        obs, rewards, terminateds, truncateds, infos = env.step(actions)
-        ep_return += infos[env.possible_agents[0]]["team_reward"]
-        if terminateds["__all__"] or truncateds["__all__"]:
-            returns.append(ep_return)
-            obs, infos = env.reset()
-            ep_return = infos[env.possible_agents[0]]["team_reward"]
+    with torch.no_grad():
+        for _ in range(n_steps):
+            actions = {}
+            for aid, module in modules.items():
+                o = torch.from_numpy(obs[aid][None])
+                out = module.forward_inference({"obs": o[:, None], "state_in": states[aid]} if aid in states
+                                               else {"obs": o})
+                logits = out["action_dist_inputs"]
+                if aid in states:
+                    states[aid], logits = out["state_out"], logits[:, 0]   # remove the time dimension
+                dist = module.get_inference_action_dist_cls().from_logits(logits)
+                actions[aid] = dist.to_deterministic().sample()[0].numpy()
+            obs, rewards, terminateds, truncateds, infos = env.step(actions)
+            ep_return += infos[env.possible_agents[0]]["team_reward"]
+            if terminateds["__all__"] or truncateds["__all__"]:
+                returns.append(ep_return)
+                obs, infos = env.reset()
+                states = initial_states()
+                ep_return = infos[env.possible_agents[0]]["team_reward"]
     return float(np.mean(returns)) if returns else ep_return
 
 

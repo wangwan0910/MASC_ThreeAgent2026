@@ -2,6 +2,8 @@
 """
 Continual learning with multi-agent PPO (Ray RLlib) between the supply chain environments (masc-continual).
 Every phase starts from the policies of the previous phase; the sequence of a task is repeated --rounds times.
+--model transformer: the agents have the gated transformer policies of masc-train-transformer (Transformer PPO, same
+--memory, --num-layers, ... options); the models go to TPPOcon-*_models/ and the figures are TPPOcon_*.png.
 
 Tasks (--task), default number of rounds and directory of the models (under --out-dir):
     0-01-1     : std 0 -> 0.1 -> 1           3 rounds   PPOcon-sto_models/
@@ -14,6 +16,7 @@ Tasks (--task), default number of rounds and directory of the models (under --ou
     masc-continual --task 10-7-3                                   # lr 0.0003
     masc-continual --task 3-7-10 --rounds 1
     masc-continual --task sto1-bat10 --lr 0.001 0.0003 0.0001      # grid search, one lr after another
+    masc-continual --task 0-01-1 --model transformer --lr 0.0001
 
 The training curve (mean episode return per iteration, cumulated environment steps) is written to TensorBoard,
 <models_dir>/tb/, one scalar per phase, and plotted at the end of the task (one figure per learning rate, in the
@@ -44,7 +47,9 @@ import sys
 import numpy as np
 from ray.rllib.core import COMPONENT_LEARNER, COMPONENT_LEARNER_GROUP, COMPONENT_RL_MODULE
 
+from .main_transformerPPO import OPTIONS as TRANSFORMER_OPTIONS
 from .marl_env import ENV_SHORT_NAMES, build_ppo_config, evaluate, init_ray
+from .models import model_defaults
 from .plotting import plot_continual
 
 
@@ -70,7 +75,15 @@ ROUNDS = {"0-01-1": 3, "1-01-0": 3, "3-7-10": 3, "10-7-3": 3, "bat10-sto1": 5, "
 MODELS_DIRS = {"0-01-1": "PPOcon-sto_models", "1-01-0": "PPOcon-sto_models",
                "3-7-10": "PPOcon-bat_models", "10-7-3": "PPOcon-bat_models",
                "bat10-sto1": "PPOconbat-sto_models", "sto1-bat10": "PPOconbat-sto_models"}
+# network of the agents (masc.models registry) -> name of the algorithm in the directories / figures and the titles
+ALGOS = {"mlp": "PPO", "transformer": "TPPO"}
+ALGO_TITLES = {"PPO": "PPO", "TPPO": "Transformer PPO"}
 RL_MODULE_PATH = os.path.join(COMPONENT_LEARNER_GROUP, COMPONENT_LEARNER, COMPONENT_RL_MODULE)
+
+
+def models_dir_name(task, algo="PPO"):
+    """Directory of the models of a task, e.g. PPOcon-sto_models (PPO) or TPPOcon-sto_models (Transformer PPO)."""
+    return algo + MODELS_DIRS[task][len("PPO"):]
 
 
 def make_phases(task, rounds):
@@ -122,19 +135,20 @@ class ContinualMonitor:
         return None
 
 
-def figure_name(task, rounds, timesteps_per_phase, lr, stamp, seed=None, n_seeds=None, suffix=""):
+def figure_name(task, rounds, timesteps_per_phase, lr, stamp, seed=None, n_seeds=None, suffix="", algo="PPO"):
     """File name of a continual learning figure, e.g.
-    PPOcon_Sto0-Sto01-Sto1_3rounds_1Msteps-per-phase_lr0.0001_5seeds_<stamp>.png (n_seeds: figure of several seeds)."""
+    PPOcon_Sto0-Sto01-Sto1_3rounds_1Msteps-per-phase_lr0.0001_5seeds_<stamp>.png (n_seeds: figure of several seeds;
+    algo TPPO: TPPOcon_...)."""
     envs = "-".join(ENV_SHORT_NAMES[e] for e in TASKS[task])
     seeds = f"_{n_seeds}seeds" if n_seeds else (f"_seed{seed}" if seed is not None else "")
-    return (f"PPOcon_{envs}_{rounds}rounds_{timesteps_per_phase / 1e6:g}Msteps-per-phase_lr{lr:g}{seeds}"
+    return (f"{algo}con_{envs}_{rounds}rounds_{timesteps_per_phase / 1e6:g}Msteps-per-phase_lr{lr:g}{seeds}"
             f"_{stamp}{suffix}.png")
 
 
-def figure_title(task, rounds, timesteps_per_phase, lr, seed=None, n_seeds=None):
+def figure_title(task, rounds, timesteps_per_phase, lr, seed=None, n_seeds=None, algo="PPO"):
     envs = " → ".join(ENV_SHORT_NAMES[e] for e in TASKS[task])
     seeds = f", mean ± std of {n_seeds} seeds" if n_seeds else (f", seed {seed}" if seed is not None else "")
-    return (f"Continual learning with PPO: {envs}, {rounds} rounds\n"
+    return (f"Continual learning with {ALGO_TITLES[algo]}: {envs}, {rounds} rounds\n"
             f"({len(TASKS[task]) * rounds} phases of {timesteps_per_phase / 1e6:g}M steps, lr {lr:g}{seeds})")
 
 
@@ -149,14 +163,15 @@ def unique_path(path):
 
 
 def run_phases(lr, models_dir, phases, timesteps_per_phase=TIMESTEPS_PER_PHASE, num_env_runners=NUM_ENV_RUNNERS,
-               monitor=None, env_settings=None, seed=None):
+               monitor=None, env_settings=None, seed=None, model=None, model_config=None):
     """Train all phases with one learning rate; returns (test reward of every phase, verdict of the monitor or
     None if the task went through). The remaining phases are skipped if the monitor stops the task.
     The training curve goes to TensorBoard (models_dir/tb), the x axis is the environment steps cumulated over the
     phases (every phase builds a new algorithm, whose step counter starts at 0): episode_return_mean (sum of the
     agents' scaled rewards) and team_return (minus the total cost, original cost units) of every iteration.
     env_settings: env_config settings of all the phases, e.g. {"max_stockout_days": 0}.
-    seed: random seed of the networks and of the demand (RLlib config.seed), the same in every phase."""
+    seed: random seed of the networks and of the demand (RLlib config.seed), the same in every phase.
+    model, model_config: network of the agents (build_ppo_config), e.g. "transformer"; default: the MLP of PPO."""
     from torch.utils.tensorboard import SummaryWriter
     os.makedirs(models_dir, exist_ok=True)
     writer = SummaryWriter(os.path.join(models_dir, "tb"))
@@ -166,7 +181,8 @@ def run_phases(lr, models_dir, phases, timesteps_per_phase=TIMESTEPS_PER_PHASE, 
     verdict = None
     for i, (phase_name, env_id) in enumerate(phases, start=1):
         env_config = {"env_class": env_id, "obs_rows": OBS_ROWS, **(env_settings or {})}
-        config = build_ppo_config(env_config, lr=lr, num_env_runners=num_env_runners, num_gpus=NUM_GPUS, seed=seed)
+        config = build_ppo_config(env_config, lr=lr, num_env_runners=num_env_runners, num_gpus=NUM_GPUS, seed=seed,
+                                  model=model, model_config=model_config)
         algo = config.build_algo()
 
         # change env: continue from the policies trained in the previous phase
@@ -182,6 +198,11 @@ def run_phases(lr, models_dir, phases, timesteps_per_phase=TIMESTEPS_PER_PHASE, 
             monitor.start_phase(i)
         while steps < timesteps_per_phase:
             result = algo.train()
+            if "num_env_steps_sampled_lifetime" not in result.get("env_runners", {}):
+                # the env runners returned no samples in time (sample_timeout_s, e.g. a crowded node): the result has
+                # no env_runners metrics, try again
+                print(f"[lr={lr} {i} {phase_name}] iteration without samples, skipped")
+                continue
             steps = result["env_runners"]["num_env_steps_sampled_lifetime"]
             ret = result["env_runners"].get("episode_return_mean")
             team = result["env_runners"].get("team_return")
@@ -248,7 +269,26 @@ def build_parser(prog=None):
                         help="no learning: the first phase must improve by this fraction")
     parser.add_argument("--no-learning-steps", type=int, default=400000,
                         help="no learning: checked after this many steps of the first phase (at most the phase length)")
+    parser.add_argument("--model", default="mlp", choices=sorted(ALGOS),
+                        help="network of the agents: mlp (PPO) or transformer (Transformer PPO, models in "
+                             "TPPOcon-*_models/)")
+    defaults = model_defaults("transformer")
+    group = parser.add_argument_group("transformer (--model transformer)")
+    for option, (key, kind, help_text) in TRANSFORMER_OPTIONS.items():
+        group.add_argument(option, dest=f"tf_{key}", type=kind, default=None,
+                           help=f"{help_text}, default {defaults[key]}")
+    group.add_argument("--head-hiddens", dest="tf_head_hiddens", type=int, nargs="+", default=None,
+                       help=f"hidden layers of the policy and value heads, default {list(defaults['head_hiddens'])}")
     return parser
+
+
+def model_config_from_args(args):
+    """Settings of the transformer from the command line (None: the default of masc.models.transformer)."""
+    if args.model != "transformer":
+        return None
+    config = {key: getattr(args, f"tf_{key}") for key, _, _ in TRANSFORMER_OPTIONS.values()}
+    config["head_hiddens"] = None if args.tf_head_hiddens is None else tuple(args.tf_head_hiddens)
+    return config
 
 
 def main(argv=None):
@@ -258,11 +298,16 @@ def main(argv=None):
         args.rounds = ROUNDS[args.task]
 
     phases = make_phases(args.task, args.rounds)
-    print(f"task {args.task}, {args.rounds} round(s):", " -> ".join(name for name, _ in phases))
+    algo = ALGOS[args.model]
+    model_config = model_config_from_args(args)
+    print(f"{ALGO_TITLES[algo]}, task {args.task}, {args.rounds} round(s):", " -> ".join(name for name, _ in phases))
+    if model_config:
+        print("transformer:", {**model_defaults("transformer"),
+                               **{k: v for k, v in model_config.items() if v is not None}})
 
     # Set up directories for saving models and logs.
     stamp = args.run_name or f"{datetime.datetime.now():%Y%m%d-%H%M%S}"
-    models_dir = os.path.abspath(os.path.join(args.out_dir, MODELS_DIRS[args.task], args.task, stamp,
+    models_dir = os.path.abspath(os.path.join(args.out_dir, models_dir_name(args.task, algo), args.task, stamp,
                                               "" if args.seed is None else f"seed={args.seed}"))
     os.makedirs(models_dir, exist_ok=True)
 
@@ -275,10 +320,11 @@ def main(argv=None):
             args.monitor_window, args.collapse_tol, args.collapse_patience, args.min_gain, args.no_learning_steps)
         env_settings = {} if args.max_stockout_days is None else {"max_stockout_days": args.max_stockout_days}
         results[lr], verdict = run_phases(lr, lr_dir, phases, args.timesteps_per_phase, args.num_env_runners, monitor,
-                                          env_settings, seed=args.seed)
+                                          env_settings, seed=args.seed, model=args.model, model_config=model_config)
         verdicts[lr] = verdict
         with open(os.path.join(lr_dir, "continual_status.json"), "w") as f:
             json.dump({"task": args.task, "rounds": args.rounds, "lr": lr, "seed": args.seed, "run_name": stamp,
+                       "algo": algo, "model": args.model, "model_config": model_config,
                        "timesteps_per_phase": args.timesteps_per_phase,
                        "env_settings": env_settings, "phases": [n for n, _ in phases],
                        "status": verdict["status"] if verdict else "completed", "verdict": verdict,
@@ -291,8 +337,8 @@ def main(argv=None):
         envs = [ENV_SHORT_NAMES[e] for e in TASKS[args.task]]
         stopped = f"_STOPPED-{verdict['status']}" if verdict else ""
         fig = unique_path(os.path.join(args.out_dir, figure_name(args.task, args.rounds, args.timesteps_per_phase, lr,
-                                                                 stamp, seed=args.seed, suffix=stopped)))
-        title = figure_title(args.task, args.rounds, args.timesteps_per_phase, lr, seed=args.seed)
+                                                                 stamp, seed=args.seed, suffix=stopped, algo=algo)))
+        title = figure_title(args.task, args.rounds, args.timesteps_per_phase, lr, seed=args.seed, algo=algo)
         if verdict:
             title += f"\nSTOPPED in phase {verdict['phase']} ({verdict['phase_name']}): {verdict['status']}"
         try:
