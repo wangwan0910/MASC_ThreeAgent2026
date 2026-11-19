@@ -198,14 +198,6 @@ masc-train-transformer --env StoSupplyEnv-v3 --no-stockout-termination --lr 0.00
     --no-early-stop --total-timesteps 2000000 --num-env-runners 2 --dir tu2_seeds
 ```
 
-**PPO results** (environment of 2026-10-15: stock-dependent lead times, orders 0–30, reorder point 0–29; 5 seeds,
-mean ± std):
-
-| Bat10 | Bat7 | Bat3 |
-|---|---|---|
-| ![PPO Bat10](assets/PPO_Bat10_5seeds.png) | ![PPO Bat7](assets/PPO_Bat7_5seeds.png) | ![PPO Bat3](assets/PPO_Bat3_5seeds.png) |
-| **Sto0** | **Sto01** | **Sto1** |
-| ![PPO Sto0](assets/PPO_Sto0_5seeds.png) | ![PPO Sto01](assets/PPO_Sto01_5seeds.png) | ![PPO Sto1](assets/PPO_Sto1_5seeds.png) |
 
 Total cost of the trained policies (one deterministic 100-day episode per seed, from the trajectory CSV):
 
@@ -221,15 +213,11 @@ converge to the same policy: retailer orders ≈ 12, warehouse and factory ≈ 2
 almost the same in all environments (≈ 1.5 per day after rounding down, 2 in Sto0) and so are the costs and lead
 times.
 
-| | Bat10 | Bat7 | Bat3 | Sto0 | Sto01 | Sto1 |
-|---|---|---|---|---|---|---|
-| Orders | ![](assets/policy/PPO_OPBat10_seed3.png) | ![](assets/policy/PPO_OPBat7_seed2.png) | ![](assets/policy/PPO_OPBat3_seed3.png) | ![](assets/policy/PPO_OPSto0_seed4.png) | ![](assets/policy/PPO_OPSto01_seed1.png) | ![](assets/policy/PPO_OPSto1_seed1.png) |
-| Inventory | ![](assets/policy/PPO_RinvBat10_seed3.png) | ![](assets/policy/PPO_RinvBat7_seed2.png) | ![](assets/policy/PPO_RinvBat3_seed3.png) | ![](assets/policy/PPO_RinvSto0_seed4.png) | ![](assets/policy/PPO_RinvSto01_seed1.png) | ![](assets/policy/PPO_RinvSto1_seed1.png) |
 
 Transformer PPO, Bat10, 5 seeds (environment before 2026-10-15, fixed lead times and orders 0–19, not comparable
 with the PPO results above):
 
-![TPPO Bat10](assets/TPPO_Bat10_5seeds.png)
+
 
 **Training monitor.** Every iteration the reward curve of a trial is checked over moving windows of
 `--conv-window` iterations: *converged* (stable within `--conv-tol` for `--conv-patience` iterations, near its best
@@ -305,27 +293,6 @@ masc-continual --task 0-01-1 --seed 0 --run-name exp1 --no-figure --no-monitor -
     --timesteps-per-phase 1000000 --no-stockout-termination      # ... and seeds 1-4
 masc-plot-continual --seeds PPOcon-sto_models/0-01-1/exp1
 ```
-
-Every iteration writes `phase<i>_<env>/team_return` to TensorBoard (`<models dir>/<task>/<run>/[seed=<s>/]lr=<lr>/tb`),
-the checkpoint of every phase is kept for the next phase, and `continual_status.json` holds the settings and the test
-return of every phase. The figure is drawn once at the end, in the style of
-[dcontinustoPPO2_2.png](assets/dcontinustoPPO2_2.png): one segment per phase in the colour of its environment
-(mean ± std of the seeds), dotted lines and labels at the start of every round, e.g.
-`PPOcon_Sto0-Sto01-Sto1_3rounds_1Msteps-per-phase_lr0.0001_5seeds_<run>.png`. A monitor stops a task that diverges,
-collapses or does not learn in the first phase (`--no-monitor` to switch it off).
-
-**PPO results** (environment of 2026-10-15, 1M steps per phase, lr 1e-4, no stockout termination, mean ± std of
-5 seeds; the inset zooms on the converged part):
-
-| Sto0 → Sto01 → Sto1 | Sto1 → Sto01 → Sto0 |
-|---|---|
-| ![](assets/continual/PPOcon_Sto0-Sto01-Sto1_3rounds.png) | ![](assets/continual/PPOcon_Sto1-Sto01-Sto0_3rounds.png) |
-| **Bat3 → Bat7 → Bat10** | **Bat10 → Bat7 → Bat3** |
-| ![](assets/continual/PPOcon_Bat3-Bat7-Bat10_3rounds.png) | ![](assets/continual/PPOcon_Bat10-Bat7-Bat3_3rounds.png) |
-| **Bat10 → Sto1** | **Sto1 → Bat10** |
-| ![](assets/continual/PPOcon_Bat10-Sto1_5rounds.png) | still training |
-
----
 
 ## 4. 📦 Installation
 
